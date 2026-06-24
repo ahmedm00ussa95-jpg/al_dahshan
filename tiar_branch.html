@@ -26,6 +26,15 @@
     const app = initializeApp(firebaseConfig);
     const db  = getDatabase(app);
 
+    /* ── parcelCount helpers ─────────────────────────────────────── */
+    function parcelCount(order) {
+      const cnt = (order?.deliveries || []).length;
+      return cnt > 0 ? cnt : 1;
+    }
+    function totalParcelsOf(ordersArr) {
+      return ordersArr.reduce((s, o) => s + parcelCount(o), 0);
+    }
+
     /* ═══════════════════════════════════════════════════════════════
        SESSION
     ═══════════════════════════════════════════════════════════════ */
@@ -476,21 +485,21 @@
       const delivered = window._ordersData.filter(o => o.status === "تم التسليم");
       const waiting   = window._pilotsData.filter(p => p.pilotStatus === "waiting").length;
       const delivering = window._pilotsData.filter(p => p.pilotStatus === "delivering").length;
-      setText("dash-active", active.length);
-      setText("dash-pending", active.filter(o => o.status === "قيد التنفيذ").length);
-      setText("dash-delivering-orders", active.filter(o => o.status === "جاري التوصيل").length);
-      setText("dash-delivered", delivered.length);
+      setText("dash-active", totalParcelsOf(active));
+      setText("dash-pending", totalParcelsOf(active.filter(o => o.status === "قيد التنفيذ")));
+      setText("dash-delivering-orders", totalParcelsOf(active.filter(o => o.status === "جاري التوصيل")));
+      setText("dash-delivered", totalParcelsOf(delivered));
       setText("dash-pilots-waiting", waiting);
       setText("dash-pilots-delivering", delivering);
       // Order page stats
-      setText("stat-active", active.length);
-      setText("stat-pending", active.filter(o => o.status === "قيد التنفيذ").length);
-      setText("stat-delivering", active.filter(o => o.status === "جاري التوصيل").length);
-      setText("stat-delivered-total", delivered.length);
+      setText("stat-active", totalParcelsOf(active));
+      setText("stat-pending", totalParcelsOf(active.filter(o => o.status === "قيد التنفيذ")));
+      setText("stat-delivering", totalParcelsOf(active.filter(o => o.status === "جاري التوصيل")));
+      setText("stat-delivered-total", totalParcelsOf(delivered));
       // badge الطلبات في الـ sidebar
       const ordersBadge = document.getElementById("ordersBadge");
       if (ordersBadge) {
-        const pendingOnly = active.filter(o => o.status === "قيد التنفيذ").length;
+        const pendingOnly = totalParcelsOf(active.filter(o => o.status === "قيد التنفيذ"));
         if (pendingOnly > 0) { ordersBadge.textContent = pendingOnly; ordersBadge.style.display = "inline-block"; }
         else                 { ordersBadge.style.display = "none"; }
       }
@@ -645,7 +654,7 @@
     function renderUndeliveredPage() {
       const undelivered = window._ordersData.filter(o => o.status === "لم يتم التوصيل");
       const utbody = document.getElementById("undeliveredOrdersBody");
-      setText("stat-undelivered-total", undelivered.length);
+      setText("stat-undelivered-total", totalParcelsOf(undelivered));
       if (!utbody) return;
       if (!undelivered.length) {
         utbody.innerHTML = `<tr><td colspan="9" class="empty-row">لا توجد طلبات غير مسلَّمة</td></tr>`;
@@ -686,7 +695,7 @@
     function renderCancelledPage() {
       const cancelled = window._ordersData.filter(o => o.status === "ملغي");
       const ctbody    = document.getElementById("cancelledOrdersBody");
-      setText("stat-cancelled-total", cancelled.length);
+      setText("stat-cancelled-total", totalParcelsOf(cancelled));
       if (!ctbody) return;
       if (!cancelled.length) {
         ctbody.innerHTML = `<tr><td colspan="7" class="empty-row">لا توجد طلبات ملغاة من الإدارة</td></tr>`;
@@ -736,7 +745,7 @@
       // بناء خيارات الطيارين مع تمييز من يحمل طلبات حالياً
       function pilotOption(p) {
         const activeOrders = window._ordersData.filter(o => o.pilotId === p.id && o.status === "جاري التوصيل");
-        const tag = activeOrders.length ? ` (يحمل ${activeOrders.length} طلب)` : "";
+        const tag = activeOrders.length ? ` (يحمل ${totalParcelsOf(activeOrders)} طرد)` : "";
         const status = p.pilotStatus === "delivering" ? "🛵" : "⏳";
         return `<option value="${p.id}">${status} ${p.name} — ${p.vehicleNo || ""}${tag}</option>`;
       }
@@ -892,7 +901,7 @@
             });
             showToast("تمّ التسليم ✓ الطيار عاد للانتظار", "success");
           } else {
-            showToast(`تمّ التسليم ✓ الطيار لا يزال يحمل ${remaining.length} طلب آخر`, "success");
+            showToast(`تمّ التسليم ✓ الطيار لا يزال يحمل ${totalParcelsOf(remaining)} طرد`, "success");
           }
         }
       } catch(e) { showToast("خطأ: " + e.message, "error"); }
@@ -930,7 +939,7 @@
             });
             showToast("تمّ تسجيل عدم التوصيل ✓ الطيار عاد للانتظار", "success");
           } else {
-            showToast(`تمّ تسجيل عدم التوصيل ✓ الطيار لا يزال يحمل ${remaining.length} طلب آخر`, "success");
+            showToast(`تمّ تسجيل عدم التوصيل ✓ الطيار لا يزال يحمل ${totalParcelsOf(remaining)} طرد`, "success");
           }
         } else {
           showToast("تمّ تسجيل عدم التوصيل ✓", "success");
@@ -961,7 +970,7 @@
 
       function pilotOption(p) {
         const activeOrders = window._ordersData.filter(o => o.pilotId === p.id && o.status === "جاري التوصيل");
-        const tag = activeOrders.length ? ` (يحمل ${activeOrders.length} طلب)` : "";
+        const tag = activeOrders.length ? ` (يحمل ${totalParcelsOf(activeOrders)} طرد)` : "";
         const status = p.pilotStatus === "delivering" ? "🛵" : "⏳";
         return `<option value="${p.id}">${status} ${p.name} — ${p.vehicleNo || ""}${tag}</option>`;
       }
@@ -1063,8 +1072,8 @@
 
       dEl.innerHTML = delivering.length ? delivering.map(p => {
         const pilotOrders = window._ordersData.filter(o => o.pilotId === p.id && o.status === "جاري التوصيل");
-        const ordersBadge = pilotOrders.length > 1
-          ? `<div style="background:rgba(249,115,22,.15);color:var(--orange);border-radius:6px;padding:3px 8px;font-size:.75rem;font-weight:700;margin-top:4px">📋 ${pilotOrders.length} طلبات</div>`
+        const ordersBadge = totalParcelsOf(pilotOrders) > 1
+          ? `<div style="background:rgba(249,115,22,.15);color:var(--orange);border-radius:6px;padding:3px 8px;font-size:.75rem;font-weight:700;margin-top:4px">📦 ${totalParcelsOf(pilotOrders)} طرد</div>`
           : "";
         const ordersDetail = pilotOrders.map(o =>
           `<div style="font-size:.73rem;color:var(--muted);margin-top:2px">• ${o.orderNum} (${(o.deliveries||[]).length} طرد)</div>`

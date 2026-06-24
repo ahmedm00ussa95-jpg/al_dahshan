@@ -352,10 +352,10 @@
       const waitingPilots    = pilots.filter(p => p.pilotStatus === "waiting").length;
       const deliveringPilots = pilots.filter(p => p.pilotStatus === "delivering").length;
 
-      document.getElementById("dashTodayOrders") && (document.getElementById("dashTodayOrders").textContent = todayOrders.length);
-      document.getElementById("dashPending") && (document.getElementById("dashPending").textContent = pending.length);
-      document.getElementById("dashDelivering") && (document.getElementById("dashDelivering").textContent = delivering.length);
-      document.getElementById("dashDelivered") && (document.getElementById("dashDelivered").textContent = deliveredToday.length);
+      document.getElementById("dashTodayOrders") && (document.getElementById("dashTodayOrders").textContent = totalParcelsOf(todayOrders));
+      document.getElementById("dashPending") && (document.getElementById("dashPending").textContent = totalParcelsOf(pending));
+      document.getElementById("dashDelivering") && (document.getElementById("dashDelivering").textContent = totalParcelsOf(delivering));
+      document.getElementById("dashDelivered") && (document.getElementById("dashDelivered").textContent = totalParcelsOf(deliveredToday));
       document.getElementById("dashTotalPilots") && (document.getElementById("dashTotalPilots").textContent = pilots.length);
       document.getElementById("dashWaitingPilots") && (document.getElementById("dashWaitingPilots").textContent = waitingPilots);
       document.getElementById("dashDeliveringPilots") && (document.getElementById("dashDeliveringPilots").textContent = deliveringPilots);
@@ -365,10 +365,10 @@
 
       body.innerHTML = branches.map((b, i) => {
         const bOrders = orders.filter(o => o.branchId === b.id);
-        const bPending = bOrders.filter(o => o.status === "قيد التنفيذ").length;
-        const bDelivering = bOrders.filter(o => o.status === "جاري التوصيل").length;
+        const bPending = totalParcelsOf(bOrders.filter(o => o.status === "قيد التنفيذ"));
+        const bDelivering = totalParcelsOf(bOrders.filter(o => o.status === "جاري التوصيل"));
         const bDeliveredToday = bOrders.filter(o => o.status === "تم التسليم" && isToday(o.deliveredAt || o.createdAt));
-        const bTodayTotal = bOrders.filter(o => isToday(o.createdAt)).length;
+        const bTodayTotal = totalParcelsOf(bOrders.filter(o => isToday(o.createdAt)));
         const bRevenueToday = bDeliveredToday.reduce((sum,o) => sum + (Number(o.totalDeliveryPrice) || 0), 0);
         const bPilots = pilots.filter(p => p.assignedBranchId === b.id).length;
         return `<tr>
@@ -377,7 +377,7 @@
           <td style="font-size:.8rem;color:var(--muted)">${b.area || "—"}</td>
           <td style="color:var(--orange);font-weight:700">${bPending}</td>
           <td style="color:var(--sky);font-weight:700">${bDelivering}</td>
-          <td style="color:var(--green);font-weight:700">${bDeliveredToday.length}</td>
+          <td style="color:var(--green);font-weight:700">${totalParcelsOf(bDeliveredToday)}</td>
           <td>${bTodayTotal}</td>
           <td style="color:var(--green)">${bRevenueToday} ج.م</td>
           <td>${bPilots}</td>
@@ -422,12 +422,27 @@
       const t = new Date(iso).getTime();
       return t >= from.getTime() && t <= to.getTime();
     }
+    /* ══════════════════════════════════════════════════════════════
+       parcelCount(order) — عدد الطرود الفعلية في الأوردر
+       الأوردر اللي فيه 3 طرود (deliveries) يُحتسب كـ 3 وليس 1
+       يُستخدم في كل الحسابات والتقارير والإحصائيات
+    ══════════════════════════════════════════════════════════════ */
+    function parcelCount(order) {
+      const cnt = (order?.deliveries || []).length;
+      return cnt > 0 ? cnt : 1;
+    }
+    /* مجموع الطرود لمجموعة أوردرات */
+    function totalParcelsOf(ordersArr) {
+      return ordersArr.reduce((s, o) => s + parcelCount(o), 0);
+    }
+
     function pilotCommissionFor(pilot, order) {
       const price = Number(order.totalDeliveryPrice) || 0;
       const type  = pilot?.commissionType || "percent";
       const val   = Number(pilot?.commissionValue) || 0;
       if (!val) return 0;
-      return type === "fixed" ? val : (price * val / 100);
+      // العمولة الثابتة: يُضرب في عدد الطرود
+      return type === "fixed" ? val * parcelCount(order) : (price * val / 100);
     }
 
     window.renderAccountingPage = function() {
@@ -471,7 +486,7 @@
           return `<tr>
             <td class="idx">${i+1}</td>
             <td><b>${b.name}</b></td>
-            <td>${bOrders.length}</td>
+            <td>${totalParcelsOf(bOrders)}</td>
             <td style="color:var(--green)">${bRevenue} ج.م</td>
             <td style="color:var(--orange)">${bPrepaid} ج.م</td>
           </tr>`;
@@ -488,7 +503,7 @@
           const pCommission = pOrders.reduce((s,o) => s + pilotCommissionFor(p, o), 0);
           const typeLabel = (p.commissionType || "percent") === "fixed" ? "ثابتة لكل طلب" : "نسبة %";
           const valLabel  = (p.commissionType || "percent") === "fixed" ? `${p.commissionValue || 0} ج.م` : `${p.commissionValue || 0}%`;
-          return { i, p, pOrders, pRevenue, pCommission, typeLabel, valLabel };
+          return { i, p, pOrders, pParcels: totalParcelsOf(pOrders), pRevenue, pCommission, typeLabel, valLabel };
         }).filter(r => r.pOrders.length > 0 || r.p.commissionValue);
         if (!rows.length) {
           pilotsBody.innerHTML = `<tr><td colspan="7" class="empty-row">لا توجد بيانات توصيل لهذه الفترة</td></tr>`;
@@ -499,7 +514,7 @@
               <td><b>${r.p.name}</b></td>
               <td>${r.typeLabel}</td>
               <td>${r.valLabel}</td>
-              <td>${r.pOrders.length}</td>
+              <td>${r.pParcels}</td>
               <td style="color:var(--green)">${r.pRevenue} ج.م</td>
               <td style="color:var(--sky);font-weight:700">${r.pCommission.toFixed(2)} ج.م</td>
             </tr>`).join("");
@@ -641,7 +656,7 @@
 
       dEl.innerHTML = delivering.length ? delivering.map(p => {
         const pilotOrders = (window._ordersData || []).filter(o => o.pilotId === p.id && o.status === "جاري التوصيل");
-        const ordersBadge = pilotOrders.length > 1
+        const ordersBadge = totalParcelsOf(pilotOrders) > 1
           ? `<div style="background:rgba(249,115,22,.15);color:var(--orange);border-radius:6px;padding:3px 8px;font-size:.75rem;font-weight:700;margin-top:4px">📋 ${pilotOrders.length} طلبات</div>`
           : "";
         const ordersDetail = pilotOrders.map(o =>
@@ -793,24 +808,27 @@
           try {
             const now = new Date().toISOString();
             let deliveredCount = 0, undeliveredCount = 0;
+            let deliveredParcels = 0, undeliveredParcels = 0;
             for (const o of activeOrders) {
               const idx = activeOrders.indexOf(o);
               const choice = box.querySelector(`input[name="_ret_${idx}"]:checked`)?.value || "delivered";
               if (choice === "delivered") {
                 await update(ref(db, "orders/" + o.id), { status: "تم التسليم", deliveredAt: now, pilotName: p.name });
                 deliveredCount++;
+                deliveredParcels += parcelCount(o);
               } else {
                 const reasonInput = document.getElementById(`_undelReason_${idx}`);
                 const reason = (reasonInput?.value || "").trim() || "—";
                 await update(ref(db, "orders/" + o.id), { status: "لم يتم التوصيل", undeliveredAt: now, undeliveredReason: reason, pilotName: p.name });
                 undeliveredCount++;
+                undeliveredParcels += parcelCount(o);
               }
             }
             const nextQ = await getNextQueueNo(p.assignedBranchId);
             await update(ref(db, "pilots/" + pilotId), { pilotStatus: "waiting", queueNo: nextQ, statusSince: now });
             let msg = "تمّ ✓ الطيار عاد للانتظار";
-            if (deliveredCount) msg += ` — ${deliveredCount} مسلَّم`;
-            if (undeliveredCount) msg += ` — ${undeliveredCount} غير مسلَّم`;
+            if (deliveredParcels) msg += ` — ${deliveredParcels} طرد مسلَّم`;
+            if (undeliveredParcels) msg += ` — ${undeliveredParcels} طرد غير مسلَّم`;
 
             // ── تحصيل مبالغ التوصيل ──
             const collectChoice = box.querySelector("input[name='_cashCollect']:checked")?.value || "no";
@@ -826,7 +844,7 @@
                     storeId, storeName: store.name,
                     type: "in", amount,
                     reason: `تحصيل توصيل — طيار: ${p.name}`,
-                    notes: `${deliveredCount} طلب مسلَّم`,
+                    notes: `${deliveredCount} أوردر — ${deliveredParcels} طرد مسلَّم`,
                     relatedPilotId: pilotId, relatedPilotName: p.name,
                     branchId: p.assignedBranchId || "",
                     branchName: store.branchName || "",
@@ -842,7 +860,7 @@
               await push(ref(db, "cashTransactions"), {
                 storeId: "", storeName: "", type: "pending", amount: 0,
                 reason: `تحصيل معلّق — طيار: ${p.name}`,
-                notes: `${deliveredCount} طلب لم يُورَّد بعد`,
+                notes: `${deliveredCount} أوردر — ${deliveredParcels} طرد لم يُورَّد بعد`,
                 relatedPilotId: pilotId, relatedPilotName: p.name,
                 branchId: p.assignedBranchId || "",
                 createdBy: window._currentUser?.username || "",
@@ -1554,7 +1572,7 @@
             await update(ref(db, "pilots/" + pilotId), { pilotStatus: "waiting", queueNo: nextQ, statusSince: now });
             showToast("تمّ التسليم ✓ الطيار عاد للانتظار", "success");
           } else {
-            showToast(`تمّ التسليم ✓ الطيار لا يزال يحمل ${remaining.length} طلب`, "success");
+            showToast(`تمّ التسليم ✓ الطيار لا يزال يحمل ${totalParcelsOf(remaining)} طرد`, "success");
           }
         } else {
           showToast("تمّ التسليم ✓", "success");
@@ -1588,7 +1606,7 @@
             await update(ref(db, "pilots/" + pilotId), { pilotStatus: "waiting", queueNo: nextQ, statusSince: now });
             showToast("تمّ تسجيل عدم التوصيل ✓ الطيار عاد للانتظار", "success");
           } else {
-            showToast(`تمّ تسجيل عدم التوصيل ✓ الطيار لا يزال يحمل ${remaining.length} طلب آخر`, "success");
+            showToast(`تمّ تسجيل عدم التوصيل ✓ الطيار لا يزال يحمل ${totalParcelsOf(remaining)} طرد`, "success");
           }
         } else {
           showToast("تمّ تسجيل عدم التوصيل ✓", "success");
@@ -1613,7 +1631,7 @@
 
       function pilotOption(p) {
         const cnt = (window._ordersData || []).filter(o => o.pilotId === p.id && o.status === "جاري التوصيل").length;
-        const tag = cnt ? ` (يحمل ${cnt} طلب)` : "";
+        const tag = cnt ? ` (يحمل ${totalParcelsOf((window._ordersData||[]).filter(o=>o.pilotId===p.id&&o.status==="جاري التوصيل"))} طرد)` : "";
         const icon = p.pilotStatus === "delivering" ? "🛵" : "⏳";
         return `<option value="${p.id}">${icon} ${p.name} — ${p.vehicleNo || ""}${tag}</option>`;
       }
@@ -1732,7 +1750,7 @@
 
       function pilotOption(p) {
         const cnt = (window._ordersData || []).filter(o => o.pilotId === p.id && o.status === "جاري التوصيل").length;
-        const tag = cnt ? ` (يحمل ${cnt} طلب)` : "";
+        const tag = cnt ? ` (يحمل ${totalParcelsOf((window._ordersData||[]).filter(o=>o.pilotId===p.id&&o.status==="جاري التوصيل"))} طرد)` : "";
         const icon = p.pilotStatus === "delivering" ? "🛵" : "⏳";
         return `<option value="${p.id}">${icon} ${p.name} — ${p.vehicleNo || ""}${tag}</option>`;
       }
@@ -4460,7 +4478,7 @@
       <div id="acc-branches">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>#</th><th>الفرع</th><th>عدد الطلبات المسلَّمة</th><th>تحصيل التوصيل</th><th>إجمالي العهدة</th></tr></thead>
+            <thead><tr><th>#</th><th>الفرع</th><th>عدد الطرود المسلَّمة</th><th>تحصيل التوصيل</th><th>إجمالي العهدة</th></tr></thead>
             <tbody id="accBranchesBody"><tr><td colspan="5" class="empty-row">جاري التحميل…</td></tr></tbody>
           </table>
         </div>
@@ -4579,7 +4597,7 @@
       <div class="sec-header" style="margin-bottom:10px"><span class="sec-title">🏢 تقرير الفروع</span></div>
       <div class="table-wrap" style="margin-bottom:24px">
         <table>
-          <thead><tr><th>#</th><th>الفرع</th><th>عدد الطلبات</th><th>إجمالي الإيرادات</th><th>صافي الفرع</th></tr></thead>
+          <thead><tr><th>#</th><th>الفرع</th><th>عدد الطرود</th><th>إجمالي الإيرادات</th><th>صافي الفرع</th></tr></thead>
           <tbody id="rep-branches-body"><tr><td colspan="5" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
         </table>
       </div>
@@ -4590,7 +4608,7 @@
         <table>
           <thead><tr>
             <th>#</th><th>الطيار</th><th>الفرع</th><th>نوع العمولة</th>
-            <th>عدد الطلبات</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th>
+            <th>عدد الطرود</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th>
           </tr></thead>
           <tbody id="rep-pilots-body"><tr><td colspan="8" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
         </table>
@@ -5343,12 +5361,19 @@
   /* ══════════════════════════════════════════════════════════════
      صفحة التقارير — Reports
   ══════════════════════════════════════════════════════════════ */
+  function parcelCount(order) {
+    const cnt = (order?.deliveries || []).length;
+    return cnt > 0 ? cnt : 1;
+  }
+  function totalParcelsOf(ordersArr) {
+    return ordersArr.reduce((s, o) => s + parcelCount(o), 0);
+  }
   function pilotCommissionFor(pilot, order) {
     const price = Number(order.totalDeliveryPrice) || 0;
     const type  = pilot?.commissionType || "percent";
     const val   = Number(pilot?.commissionValue) || 0;
     if (!val) return 0;
-    return type === "fixed" ? val : (price * val / 100);
+    return type === "fixed" ? val * parcelCount(order) : (price * val / 100);
   }
 
   /* رسم حقول الفترة بناءً على نوعها (يوم / شهر / سنة / فترة مخصصة) */
@@ -5461,7 +5486,7 @@
         return s + pilotCommissionFor(pilot, o);
       }, 0);
       const bNet = bRevenue - bComm;
-      return { name: b.name, ordersCount: bOrders.length, revenue: bRevenue, net: bNet };
+      return { name: b.name, ordersCount: totalParcelsOf(bOrders), revenue: bRevenue, net: bNet };
     });
 
     const pilotsToShow = pilotFilter ? pilots.filter(p => p.id === pilotFilter) : pilots;
@@ -5475,7 +5500,7 @@
         name: p.name,
         branchName: branch ? branch.name : "—",
         typeLabel,
-        ordersCount: pOrders.length,
+        ordersCount: totalParcelsOf(pOrders),
         revenue: pRevenue,
         commission: pCommission,
         net: pRevenue - pCommission
@@ -5538,13 +5563,13 @@
     }]);
 
     const branchesSheet = XLSX.utils.json_to_sheet(data.branchRows.map((b,i) => ({
-      "#": i+1, "الفرع": b.name, "عدد الطلبات": b.ordersCount,
+      "#": i+1, "الفرع": b.name, "عدد الطرود": b.ordersCount,
       "إجمالي الإيرادات": b.revenue, "صافي الفرع": Number(b.net.toFixed(2))
     })));
 
     const pilotsSheet = XLSX.utils.json_to_sheet(data.pilotRows.map((p,i) => ({
       "#": i+1, "الطيار": p.name, "الفرع": p.branchName, "نوع العمولة": p.typeLabel,
-      "عدد الطلبات": p.ordersCount, "إجمالي التوصيل": p.revenue,
+      "عدد الطرود": p.ordersCount, "إجمالي التوصيل": p.revenue,
       "عمولة الطيار": Number(p.commission.toFixed(2)), "صافي الفرع": Number(p.net.toFixed(2))
     })));
 
@@ -5594,10 +5619,10 @@
         <div><div class="lbl">صافي الأرباح</div><div class="val">${data.net.toFixed(2)} ج.م</div></div>
       </div>
       <h2>🏢 تقرير الفروع</h2>
-      <table><thead><tr><th>#</th><th>الفرع</th><th>عدد الطلبات</th><th>إجمالي الإيرادات</th><th>صافي الفرع</th></tr></thead>
+      <table><thead><tr><th>#</th><th>الفرع</th><th>عدد الطرود</th><th>إجمالي الإيرادات</th><th>صافي الفرع</th></tr></thead>
       <tbody>${branchRowsHtml || '<tr><td colspan="5">لا توجد بيانات</td></tr>'}</tbody></table>
       <h2>👨‍✈️ تقرير الطيارين التفصيلي</h2>
-      <table><thead><tr><th>#</th><th>الطيار</th><th>الفرع</th><th>نوع العمولة</th><th>عدد الطلبات</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th></tr></thead>
+      <table><thead><tr><th>#</th><th>الطيار</th><th>الفرع</th><th>نوع العمولة</th><th>عدد الطرود</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th></tr></thead>
       <tbody>${pilotRowsHtml || '<tr><td colspan="8">لا توجد بيانات</td></tr>'}</tbody></table>
       <script>window.onload = () => { window.print(); };<\/script>
       </body></html>`;
