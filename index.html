@@ -597,19 +597,8 @@
           if (!snap.exists()) {
             await set(ref(db, `users/${key}`), userData);
             console.log(`✅ Default user created: ${key}`);
-          } else {
-            // إن وُجد المستخدم لكن بدون allowedApps، أضفها
-            const existing = snap.val();
-            if (!existing.allowedApps) {
-              // قرر الصلاحيات بناءً على الدور
-              let apps = [];
-              if (existing.role === "مدير" || existing.role === "مدير عام") apps = ["admin","branch","store"];
-              else if (existing.role === "مشرف فرع" || existing.role === "مشرف") apps = ["branch"];
-              else if (existing.role === "صاحب محل" || existing.role === "تاجر") apps = ["store"];
-              else apps = ["admin"]; // افتراضي للمستخدمين القدامى
-              await set(ref(db, `users/${key}/allowedApps`), apps);
-            }
           }
+          // لا نغير اليوزرات الموجودة أبداً — البيانات الافتراضية محمية
         }
       } catch(e) {
         console.error("Seed error:", e);
@@ -700,6 +689,25 @@
     };
 
     /* ══════════════════════════════════════════════════════════
+       ROLE → ALLOWED APPS
+       يحدد البرامج المسموحة بناءً على الدور تلقائياً
+       لو كانت allowedApps موجودة في Firebase تُستخدم مباشرة
+    ══════════════════════════════════════════════════════════ */
+    function resolveAllowedApps(userData) {
+      // لو موجودة في Firebase → استخدمها مباشرة
+      if (Array.isArray(userData.allowedApps) && userData.allowedApps.length > 0) {
+        return userData.allowedApps;
+      }
+      // وإلا احسبها من الدور
+      const role = (userData.role || "").trim();
+      if (["مدير", "مدير عام", "admin"].includes(role))            return ["admin", "branch", "store"];
+      if (["مشرف فرع", "مشرف", "branch"].includes(role))           return ["branch"];
+      if (["صاحب محل", "تاجر", "محل", "store"].includes(role))     return ["store"];
+      // أي دور غير معروف → إدارة فقط (الأكثر أماناً للمستخدمين القدامى)
+      return ["admin"];
+    }
+
+    /* ══════════════════════════════════════════════════════════
        LOGIN
     ══════════════════════════════════════════════════════════ */
     window.doLogin = async function() {
@@ -722,13 +730,14 @@
         if (snap.exists()) {
           const userData = snap.val();
           if (userData.password === passInput) {
-            // ✅ دخول ناجح
+            // ✅ دخول ناجح — احسب allowedApps من الدور لو مش موجودة
+            const allowedApps = resolveAllowedApps(userData);
             const sessionData = {
               username:    userInput,
-              password:    passInput,   // محفوظة للـ passthrough
-              role:        userData.role || "",
-              displayName: userData.displayName || userInput,
-              allowedApps: userData.allowedApps || [],
+              password:    passInput,
+              role:        userData.role        || "",
+              displayName: userData.displayName || userData.username || userInput,
+              allowedApps: allowedApps,
               branchId:    userData.branchId    || null,
               branchName:  userData.branchName  || null,
               shopName:    userData.shopName    || null,
@@ -777,11 +786,21 @@
       if (saved) {
         const data = JSON.parse(saved);
         if (data?.username) {
-          // تحقق من بيانات المستخدم من Firebase (للتأكد من الصلاحيات المحدثة)
+          // أعد التحقق من Firebase للحصول على أحدث البيانات
           const snap = await get(ref(db, "users/" + data.username));
           if (snap.exists() && snap.val().password === data.password) {
             const fresh = snap.val();
-            const refreshed = { ...data, allowedApps: fresh.allowedApps || data.allowedApps, role: fresh.role || data.role };
+            const refreshed = {
+              ...data,
+              role:        fresh.role        || data.role,
+              displayName: fresh.displayName || data.displayName || data.username,
+              allowedApps: resolveAllowedApps(fresh),   // ← دايماً من Firebase الجديدة
+              branchId:    fresh.branchId    || data.branchId    || null,
+              branchName:  fresh.branchName  || data.branchName  || null,
+              shopName:    fresh.shopName    || data.shopName    || null,
+              shopPhone:   fresh.shopPhone   || data.shopPhone   || null,
+              shopAddress: fresh.shopAddress || data.shopAddress || null,
+            };
             saveSession(refreshed);
             applySession(refreshed);
           } else {
