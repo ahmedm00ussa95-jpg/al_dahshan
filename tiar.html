@@ -25,6 +25,29 @@
     const app = initializeApp(firebaseConfig);
     const db  = getDatabase(app);
 
+    /* ── تعريض Firebase للـ scripts خارج الـ module ─────────────────── */
+    window._db  = db;
+    window._ref = ref;
+    window._update = update;
+    window._push   = push;
+    window._set    = set;
+    window._remove = remove;
+    window._get    = get;
+
+    /* ── Helper aliases — تجسير دوال الـ scripts العادية للـ module ──── */
+    function showToast(msg, type) {
+      if (window.showToast) { window.showToast(msg, type); return; }
+      const t = document.getElementById("toast");
+      if (!t) return;
+      t.textContent = msg; t.className = "show " + type;
+      setTimeout(() => t.className = "", 3000);
+    }
+    function closeModal(type) {
+      if (window.closeModal) { window.closeModal(type); return; }
+      document.getElementById(`modal-${type}`)?.classList.remove("open");
+      document.body.style.overflow = "";
+    }
+
     /* ── Seed default admin ─────────────────────────────────────────────── */
     async function seedDefaultAdmin() {
       const snap = await get(ref(db, "users"));
@@ -275,9 +298,11 @@
     function resetEditState() {
       window._editState = { active: false, id: null, collection: null, type: null };
     }
+    window.resetEditState = resetEditState;   // تعريض للـ scripts خارج الـ module
     function setEditMode(id, collection, type) {
       window._editState = { active: true, id, collection, type };
     }
+    window.setEditMode = setEditMode;         // تعريض للـ scripts خارج الـ module
 
     /* ── Pilots ─────────────────────────────────────────────────────────── */
     window.addPilot = async function () {
@@ -467,28 +492,39 @@
         const pilot = pilots.find(p => p.id === o.pilotId);
         return s + pilotCommissionFor(pilot, o);
       }, 0);
-      const net = totalRevenue - totalCommissions - totalExpenses;
+
+      // خارج = عدد أوردرات الفروع المسلَّمة في الفترة × 2 ج.م
+      const branchOrdersCount = deliveredInRange.filter(o => o.branchId).length;
+      const totalOutgoing = branchOrdersCount * 2;
+
+      const net = totalRevenue - totalCommissions - totalExpenses - totalOutgoing;
 
       document.getElementById("accTotalRevenue").textContent  = totalRevenue + " ج.م";
       document.getElementById("accStorePrepaid").textContent  = totalStorePrepaid + " ج.م";
       document.getElementById("accCommissions").textContent   = totalCommissions.toFixed(2) + " ج.م";
       document.getElementById("accExpenses").textContent      = totalExpenses + " ج.م";
+      document.getElementById("accOutgoing").textContent      = totalOutgoing + " ج.م";
       document.getElementById("accNet").textContent           = net.toFixed(2) + " ج.م";
 
       // تقرير الفروع
       if (!branches.length) {
-        branchesBody.innerHTML = `<tr><td colspan="5" class="empty-row">لا توجد فروع مسجّلة</td></tr>`;
+        branchesBody.innerHTML = `<tr><td colspan="8" class="empty-row">لا توجد فروع مسجّلة</td></tr>`;
       } else {
         branchesBody.innerHTML = branches.map((b,i) => {
-          const bOrders = deliveredInRange.filter(o => o.branchId === b.id);
+          const bOrders  = deliveredInRange.filter(o => o.branchId === b.id);
           const bRevenue = bOrders.reduce((s,o) => s + (Number(o.totalDeliveryPrice) || 0), 0);
           const bPrepaid = bOrders.reduce((s,o) => s + (Number(o.storePrepaid) || 0), 0);
+          const bOutgoing = bOrders.length * 2;   // رسوم تطوير: عدد الأوردرات × 2 ج.م
+          const bNet      = bRevenue - bOutgoing;
           return `<tr>
             <td class="idx">${i+1}</td>
             <td><b>${b.name}</b></td>
-            <td>${totalParcelsOf(bOrders)}</td>
+            <td style="text-align:center">${bOrders.length}</td>
+            <td style="text-align:center">${totalParcelsOf(bOrders)}</td>
             <td style="color:var(--green)">${bRevenue} ج.م</td>
             <td style="color:var(--orange)">${bPrepaid} ج.م</td>
+            <td style="color:var(--red);font-weight:700">${bOutgoing} ج.م</td>
+            <td style="color:${bNet >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:700">${bNet} ج.م</td>
           </tr>`;
         }).join("");
       }
@@ -891,22 +927,32 @@
       if (!name || !phone1 || !address) { showToast("يرجى تعبئة جميع الحقول الإلزامية", "error"); return; }
       const btnId = "submit" + prefix.charAt(0).toUpperCase() + prefix.slice(1) + "Btn";
       const btn = document.getElementById(btnId);
+      const isEditing = window._editState.active && window._editState.type === modalType;
       btn.disabled = true; btn.textContent = "جاري الحفظ…";
       try {
-        if (window._editState.active && window._editState.type === modalType) {
+        if (isEditing) {
           await update(ref(db, collection + "/" + window._editState.id), { name, phone1, phone2, address, updatedAt: new Date().toISOString() });
           showToast("تمّ تحديث بيانات العميل ✓", "success");
         } else {
-          const newRef = await push(ref(db, collection));
-          await set(newRef, { name, phone1, phone2, address, createdAt: new Date().toISOString() });
-          const label = collection === "senders" ? "عميل استلام" : "عميل تسليم";
-          showToast("تمّ إضافة " + label + " بنجاح ✓", "success");
+          // تحقق إذا كان الرقم موجوداً مسبقاً لتجنب التكرار
+          const existingSnap = await get(ref(db, collection));
+          const existingData = existingSnap.val() || {};
+          const duplicate = Object.entries(existingData).find(([,v]) => v.phone1 === phone1);
+          if (duplicate) {
+            showToast("تنبيه: هذا الرقم موجود مسبقاً — تمّ تحديث البيانات ✓", "success");
+            await update(ref(db, collection + "/" + duplicate[0]), { name, phone1, phone2, address, updatedAt: new Date().toISOString() });
+          } else {
+            const newRef = await push(ref(db, collection));
+            await set(newRef, { name, phone1, phone2, address, createdAt: new Date().toISOString() });
+            const label = collection === "senders" ? "عميل استلام" : "عميل تسليم";
+            showToast("تمّ إضافة " + label + " بنجاح ✓", "success");
+          }
         }
         document.getElementById("add" + prefix.charAt(0).toUpperCase() + prefix.slice(1) + "Form").reset();
         resetEditState();
         closeModal(modalType);
       } catch (e) { showToast("خطأ أثناء الحفظ: " + e.message, "error"); }
-      finally { btn.disabled = false; btn.textContent = window._editState.active ? "تحديث العميل" : "حفظ العميل"; }
+      finally { btn.disabled = false; btn.textContent = isEditing ? "تحديث العميل" : "حفظ العميل"; }
     };
     window.deleteClient = async function (collection, id) {
       if (!confirm("هل أنت متأكد من حذف هذا العميل؟")) return;
@@ -914,9 +960,9 @@
       catch (e) { showToast("خطأ أثناء الحذف", "error"); }
     };
     window.openEditClient = function (collection, id, type) {
-      const list = collection === 'senders' ? window._sendersData : window._receiversData;
+      const list = collection === 'senders' ? (window._sendersData || window._sendersList) : (window._receiversData || window._receiversList);
       const c = list?.find(x => x.id === id);
-      if (!c) return;
+      if (!c) { showToast("لم يتم العثور على بيانات العميل", "error"); return; }
       const prefix = type;
       document.getElementById(prefix + "Name").value    = c.name;
       document.getElementById(prefix + "Phone1").value  = c.phone1;
@@ -964,6 +1010,70 @@
         <td><button class="edit-btn" onclick="openEditClient('receivers','${c.id}','receiver')">تعديل</button><button class="del-btn" onclick="deleteClient('receivers','${c.id}')">حذف</button></td>
       </tr>`).join("");
     });
+
+    /* ══════════════════════════════════════════════════════════════
+       AUTOCOMPLETE لنماذج إضافة / تعديل العملاء (استلام وتسليم)
+    ══════════════════════════════════════════════════════════════ */
+    window.clientModalSearch = function(type, field) {
+      const isSender = type === 'sender';
+      const nameEl   = document.getElementById(isSender ? 'senderName'   : 'receiverName');
+      const phoneEl  = document.getElementById(isSender ? 'senderPhone1' : 'receiverPhone1');
+      const drop     = document.getElementById(isSender ? 'senderModalDrop' : 'receiverModalDrop');
+      const list     = isSender ? (window._sendersData || []) : (window._receiversData || []);
+      if (!drop) return;
+      const q = (field === 'name' ? nameEl?.value : phoneEl?.value || '').trim().toLowerCase();
+      if (q.length < 1) { drop.style.display = 'none'; return; }
+      const hits = list.filter(c =>
+        (field === 'name'  && c.name?.toLowerCase().includes(q)) ||
+        (field === 'phone' && (c.phone1?.includes(q) || c.phone2?.includes(q)))
+      ).slice(0, 8);
+      if (!hits.length) { drop.style.display = 'none'; return; }
+      drop.innerHTML = hits.map(c => `
+        <div onmousedown="pickClientModal('${type}','${c.id}')"
+          style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px"
+          onmouseover="this.style.background='rgba(14,165,233,.08)'" onmouseout="this.style.background=''">
+          <div>
+            <div style="font-weight:700;font-size:.88rem;color:var(--text)">${c.name}</div>
+            <div style="font-size:.75rem;color:var(--muted)" dir="ltr">${c.phone1 || ''}${c.phone2 ? ' / ' + c.phone2 : ''}${c.address ? ' | ' + c.address.slice(0,30) : ''}</div>
+          </div>
+          <span style="font-size:.7rem;color:var(--sky);white-space:nowrap">✏️ تعديل</span>
+        </div>`).join('');
+      drop.style.display = 'block';
+    };
+
+    window.pickClientModal = function(type, clientId) {
+      const isSender = type === 'sender';
+      const list     = isSender ? (window._sendersData || []) : (window._receiversData || []);
+      const c        = list.find(x => x.id === clientId);
+      if (!c) return;
+      const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+      if (isSender) {
+        set('senderName',    c.name);
+        set('senderPhone1',  c.phone1);
+        set('senderPhone2',  c.phone2 || '');
+        set('senderAddress', c.address || '');
+        document.querySelector('#modal-sender .modal-title').textContent = '🏪 تعديل عميل استلام';
+        document.getElementById('submitSenderBtn').textContent = 'تحديث العميل';
+      } else {
+        set('receiverName',    c.name);
+        set('receiverPhone1',  c.phone1);
+        set('receiverPhone2',  c.phone2 || '');
+        set('receiverAddress', c.address || '');
+        document.querySelector('#modal-receiver .modal-title').textContent = '📬 تعديل عميل تسليم';
+        document.getElementById('submitReceiverBtn').textContent = 'تحديث العميل';
+      }
+      setEditMode(clientId, isSender ? 'senders' : 'receivers', type);
+      const drop = document.getElementById(isSender ? 'senderModalDrop' : 'receiverModalDrop');
+      if (drop) drop.style.display = 'none';
+      showToast('تمّ تحميل بيانات العميل — عدّل ثم اضغط تحديث ✓', 'success');
+    };
+
+    window.hideClientModalDrop = function(type, delay) {
+      setTimeout(() => {
+        const drop = document.getElementById(type === 'sender' ? 'senderModalDrop' : 'receiverModalDrop');
+        if (drop) drop.style.display = 'none';
+      }, delay || 0);
+    };
 
     /* ── Branches ───────────────────────────────────────────────────────── */
     window.addBranch = async function () {
@@ -1382,6 +1492,21 @@
     window.openModal = function (type) {
       document.getElementById(`modal-${type}`).classList.add("open");
       document.body.style.overflow = "hidden";
+      if (type === "sender") {
+        // إعادة ضبط نموذج الاستلام للإضافة الجديدة (إلا لو openEditClient هو من فتحه)
+        if (!window._editState?.active) {
+          document.querySelector('#modal-sender .modal-title').textContent = '🏪 إضافة عميل استلام';
+          document.getElementById('submitSenderBtn').textContent = 'حفظ العميل';
+        }
+        const d = document.getElementById('senderModalDrop'); if (d) d.style.display = 'none';
+      }
+      if (type === "receiver") {
+        if (!window._editState?.active) {
+          document.querySelector('#modal-receiver .modal-title').textContent = '📬 إضافة عميل تسليم';
+          document.getElementById('submitReceiverBtn').textContent = 'حفظ العميل';
+        }
+        const d = document.getElementById('receiverModalDrop'); if (d) d.style.display = 'none';
+      }
       if (type === "zone") {
         const zbs = document.getElementById("zoneBranchSelect");
         if (zbs) {
@@ -2109,33 +2234,98 @@
           </div>` : ""}
           <div class="od-card">
             <div class="od-card-title">📋 معلومات الطلب</div>
+
+            <!-- صف: رقم الطلب + الإجمالي -->
             <div class="od-2col">
               <div class="od-info-block">
                 <span class="od-info-label">رقم الطلب</span>
-                <span class="od-info-val" style="color:var(--sky);font-weight:800">${o.orderNum || "—"}</span>
+                <span class="od-info-val" style="color:var(--sky);font-weight:800;font-size:1.05rem">${o.orderNum || "—"}</span>
               </div>
               <div class="od-info-block">
                 <span class="od-info-label">إجمالي التوصيل</span>
                 <span class="od-info-val od-total">${o.totalDeliveryPrice || 0} ج.م</span>
               </div>
             </div>
-            <div class="od-info-block" style="margin-top:8px">
-              <span class="od-info-label">الفرع</span>
-              <span class="od-info-val">${o.branchName || "—"}</span>
+
+            <!-- صف: الفرع + المصدر -->
+            <div class="od-2col" style="margin-top:8px">
+              <div class="od-info-block">
+                <span class="od-info-label">🏢 الفرع</span>
+                <span class="od-info-val">${o.branchName || "—"}</span>
+              </div>
+              <div class="od-info-block">
+                <span class="od-info-label">📌 مصدر الطلب</span>
+                <span class="od-info-val">${orderSourceBadge(o)}</span>
+              </div>
             </div>
-            ${o.pilotName ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">الطيار</span><span class="od-info-val" style="color:var(--sky)">🛵 ${o.pilotName}</span></div>` : ""}
-            ${o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">وقت التسليم</span><span class="od-info-val">${fmt(o.deliveredAt)}</span></div>` : ""}
-            <div class="od-info-block" style="margin-top:8px">
-              <span class="od-info-label">📌 مصدر الطلب</span>
-              <span class="od-info-val">${orderSourceBadge(o)}</span>
+
+            <!-- الطيار -->
+            ${o.pilotName ? `
+            <div class="od-info-block" style="margin-top:10px;padding:10px 14px;background:rgba(14,165,233,.07);border:1px solid rgba(14,165,233,.18);border-radius:10px">
+              <span class="od-info-label">🛵 المندوب</span>
+              <span class="od-info-val" style="color:var(--sky);font-weight:700;font-size:.95rem">${o.pilotName}</span>
+            </div>` : ""}
+
+            <!-- ── خط زمني ── -->
+            <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+              <div style="font-size:.78rem;font-weight:700;color:var(--muted);margin-bottom:10px;letter-spacing:.04em">⏱️ الخط الزمني للطلب</div>
+
+              <!-- 1. وصول الطلب للفرع -->
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(14,165,233,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">📥</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">وصول الطلب للفرع</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--text)">${fmt(o.createdAt)}</div>
+                </div>
+              </div>
+
+              <!-- 2. تحميل على المندوب -->
+              ${o.statusSince ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(249,115,22,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">🛵</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">تحميل الطلب على المندوب</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--text)">${fmt(o.statusSince)}</div>
+                  ${o.createdAt ? `<div style="font-size:.75rem;color:var(--orange);margin-top:2px">⏳ انتظر في الفرع: ${fmtDur(o.createdAt, o.statusSince)}</div>` : ""}
+                </div>
+              </div>` : ""}
+
+              <!-- 3. التسليم أو الحالة الحالية -->
+              ${o.deliveredAt ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(34,197,94,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">✅</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">تم التسليم</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--green)">${fmt(o.deliveredAt)}</div>
+                  ${o.statusSince ? `<div style="font-size:.75rem;color:var(--sky);margin-top:2px">🛵 استغرق التوصيل: ${fmtDur(o.statusSince, o.deliveredAt)}</div>` : ""}
+                </div>
+              </div>` : o.undeliveredAt ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(239,68,68,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">↩️</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">لم يتم التوصيل</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--red)">${fmt(o.undeliveredAt)}</div>
+                  ${o.undeliveredReason ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">📝 ${o.undeliveredReason}</div>` : ""}
+                </div>
+              </div>` : `
+              <div style="display:flex;align-items:flex-start;gap:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(249,115,22,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">🔄</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">جاري التوصيل</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--orange)" id="od-timer-${o.id}">${formatElapsed(o.statusSince || o.createdAt)}</div>
+                </div>
+              </div>`}
+
+              <!-- ملخص الأوقات للطلبات المسلّمة -->
+              ${o.deliveredAt ? `
+              <div style="margin-top:12px;padding:10px 14px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;display:flex;flex-direction:column;gap:6px">
+                <div style="font-size:.76rem;font-weight:700;color:var(--green);margin-bottom:2px">📊 ملخص الأوقات</div>
+                ${o.createdAt && o.statusSince ? `<div style="display:flex;justify-content:space-between;font-size:.78rem"><span style="color:var(--muted)">⏳ انتظار في الفرع</span><span style="font-weight:600;color:var(--orange)">${fmtDur(o.createdAt, o.statusSince)}</span></div>` : ""}
+                ${o.statusSince && o.deliveredAt ? `<div style="display:flex;justify-content:space-between;font-size:.78rem"><span style="color:var(--muted)">🛵 مدة التوصيل</span><span style="font-weight:600;color:var(--sky)">${fmtDur(o.statusSince, o.deliveredAt)}</span></div>` : ""}
+                ${o.createdAt && o.deliveredAt ? `<div style="display:flex;justify-content:space-between;font-size:.78rem;border-top:1px solid rgba(34,197,94,.2);padding-top:6px;margin-top:2px"><span style="color:var(--muted)">⏱️ إجمالي من الفرع حتى التسليم</span><span style="font-weight:800;color:var(--green)">${fmtDur(o.createdAt, o.deliveredAt)}</span></div>` : ""}
+              </div>` : ""}
             </div>
-            <div class="od-info-block" style="margin-top:8px">
-              <span class="od-info-label">تاريخ الإنشاء / وصول الطلب للفرع</span>
-              <span class="od-info-val" style="font-size:.82rem">${fmt(o.createdAt)}</span>
-            </div>
-            ${!o.deliveredAt && o.createdAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ المدة المنقضية منذ وصول الطلب للفرع</span><span class="od-info-val" id="od-timer-${o.id}" style="color:var(--orange)">${formatElapsed(o.createdAt)}</span></div>` : ""}
-            ${o.statusSince && o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ المدة التي استغرقها الطيار للتسليم</span><span class="od-info-val" style="color:var(--sky)">${fmtDur(o.statusSince, o.deliveredAt)}</span></div>` : ""}
-            ${o.createdAt && o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ إجمالي المدة من الوصول للفرع حتى التسليم</span><span class="od-info-val" style="color:var(--green);font-weight:800">${fmtDur(o.createdAt, o.deliveredAt)}</span></div>` : ""}
+
           </div>
           <div class="od-card od-card-pickup">
             <div class="od-card-title">🏪 جهة الاستلام</div>
@@ -2157,13 +2347,14 @@
           </div>` : ""}
         </div>`;
       document.body.appendChild(box);
-      if (!o.deliveredAt && o.createdAt) {
+      if (!o.deliveredAt && !o.undeliveredAt) {
+        const timerBase = o.statusSince || o.createdAt;
         const odTimerEl = document.getElementById(`od-timer-${o.id}`);
-        if (odTimerEl) {
+        if (odTimerEl && timerBase) {
           const odInt = setInterval(() => {
             const el = document.getElementById(`od-timer-${o.id}`);
             if (!el || !document.getElementById("_odBox")) { clearInterval(odInt); return; }
-            el.textContent = formatElapsed(o.createdAt);
+            el.textContent = formatElapsed(timerBase);
           }, 1000);
         }
       }
@@ -2240,7 +2431,7 @@
       const cancelled = list.filter(o => o.status === "ملغي");
       const undelivered = list.filter(o => o.status === "لم يتم التوصيل");
 
-      document.getElementById("totalOrders").textContent   = active.length;
+      document.getElementById("totalOrders").textContent   = totalParcelsOf(active);
       document.getElementById("pendingOrders").textContent = pending.length;
       // badge الطلبات في الـ sidebar
       const ordersBadge = document.getElementById("ordersBadge");
@@ -2351,9 +2542,10 @@
       // جدول الطلبات المسلَّمة
       const dtbody = document.getElementById("deliveredOrdersBody");
       if (dtbody) {
-        if (!delivered.length) { dtbody.innerHTML = `<tr><td colspan="11" class="empty-row">لا توجد طلبات مسلَّمة بعد</td></tr>`; }
-        else {
-          dtbody.innerHTML = delivered.map((o, i) => {
+        // تعريف دالة الرسم القابلة لإعادة الاستخدام (تُستخدم أيضاً من فلاتر الصفحة)
+        window._renderDeliveredTable = function(ordersArr) {
+          if (!ordersArr.length) { dtbody.innerHTML = `<tr><td colspan="11" class="empty-row">لا توجد طلبات مسلَّمة بعد</td></tr>`; return; }
+          dtbody.innerHTML = ordersArr.map((o, i) => {
             const delivSummary = (o.deliveries || []).map(d => `<span style="display:block;font-size:.74rem;color:var(--muted)">${d.receiverName} — ${d.zoneName}</span>`).join("");
             return `<tr>
               <td class="idx">${i+1}</td>
@@ -2369,8 +2561,18 @@
               <td><button class="del-btn" onclick="deleteOrder('${o.id}')">حذف</button> <button class="view-btn" onclick="viewOrderDetails('${o.id}')">🔍 تفاصيل</button></td>
             </tr>`;
           }).join("");
+        };
+        // تعبئة الفلاتر وتطبيقها (أو رسم الكل إن لم تكن مفعَّلة بعد)
+        if (window.applyDeliveredFilters && document.getElementById("deliveredPilotFilter")?.options.length > 1) {
+          if (window.populateDeliveredFilters) window.populateDeliveredFilters();
+          window.applyDeliveredFilters();
+        } else {
+          window._renderDeliveredTable(delivered);
+          if (window.populateDeliveredFilters) window.populateDeliveredFilters();
         }
         document.getElementById("totalDelivered") && (document.getElementById("totalDelivered").textContent = delivered.length);
+        const filteredEl = document.getElementById("totalDeliveredFiltered");
+        if (filteredEl && filteredEl.textContent === "0") filteredEl.textContent = delivered.length;
       }
 
       // جدول الطلبات الملغاة
@@ -4268,6 +4470,35 @@
     <div class="page" id="page-delivered">
       <div class="stats">
         <div class="stat-card"><span class="stat-label">إجمالي المسلَّمة</span><span class="stat-value" id="totalDelivered" style="color:var(--green)">0</span></div>
+        <div class="stat-card"><span class="stat-label">المعروضة بعد الفلتر</span><span class="stat-value" id="totalDeliveredFiltered" style="color:var(--sky)">0</span></div>
+      </div>
+      <!-- شريط الفلاتر -->
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;background:var(--panel);padding:14px 16px;border-radius:12px;border:1px solid var(--border)">
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">الطيار</label>
+          <select id="deliveredPilotFilter" onchange="applyDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);min-width:130px;font-size:.83rem">
+            <option value="">— كل الطيارين —</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">الفرع</label>
+          <select id="deliveredBranchFilter" onchange="applyDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);min-width:130px;font-size:.83rem">
+            <option value="">— كل الفروع —</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">من تاريخ</label>
+          <input type="date" id="deliveredFromDate" onchange="applyDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">إلى تاريخ</label>
+          <input type="date" id="deliveredToDate" onchange="applyDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">بحث</label>
+          <input type="text" id="deliveredSearchInput" oninput="applyDeliveredFilters()" placeholder="رقم طلب أو اسم..." style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem;min-width:150px">
+        </div>
+        <button onclick="clearDeliveredFilters()" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:.82rem;height:36px;align-self:flex-end">✕ مسح الفلاتر</button>
       </div>
       <div class="sec-header"><span class="sec-title">✅ الطلبات المسلَّمة</span></div>
       <div class="table-wrap">
@@ -4465,6 +4696,7 @@
         <div class="stat-card"><span class="stat-label">إجمالي عُهَد التوصيل (Store Prepaid)</span><span class="stat-value" id="accStorePrepaid" style="color:var(--orange)">0 ج.م</span></div>
         <div class="stat-card"><span class="stat-label">إجمالي عمولات الطيارين</span><span class="stat-value" id="accCommissions" style="color:var(--sky)">0 ج.م</span></div>
         <div class="stat-card"><span class="stat-label">إجمالي المصروفات</span><span class="stat-value" id="accExpenses" style="color:var(--red)">0 ج.م</span></div>
+        <div class="stat-card" title="رسوم تطوير — عدد أوردرات كل فرع × 2 ج.م، تُقتطع من إيرادات الفروع"><span class="stat-label">🔄 خارج <span style="font-size:.72rem;color:var(--muted)">(رسوم تطوير)</span></span><span class="stat-value" id="accOutgoing" style="color:var(--red)">0 ج.م</span></div>
         <div class="stat-card"><span class="stat-label">الصافي</span><span class="stat-value" id="accNet" style="color:var(--green)">0 ج.م</span></div>
       </div>
 
@@ -4478,7 +4710,7 @@
       <div id="acc-branches">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>#</th><th>الفرع</th><th>عدد الطرود المسلَّمة</th><th>تحصيل التوصيل</th><th>إجمالي العهدة</th></tr></thead>
+            <thead><tr><th>#</th><th>الفرع</th><th>عدد الأوردرات</th><th>عدد الطرود</th><th>تحصيل التوصيل</th><th>إجمالي العهدة</th><th style="color:var(--red)">🔄 خارج</th><th style="color:var(--green)">صافي الفرع</th></tr></thead>
             <tbody id="accBranchesBody"><tr><td colspan="5" class="empty-row">جاري التحميل…</td></tr></tbody>
           </table>
         </div>
@@ -4608,9 +4840,54 @@
         <table>
           <thead><tr>
             <th>#</th><th>الطيار</th><th>الفرع</th><th>نوع العمولة</th>
-            <th>عدد الطرود</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th>
+            <th>عدد الطرود</th><th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th><th>إجراء</th>
           </tr></thead>
-          <tbody id="rep-pilots-body"><tr><td colspan="8" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
+          <tbody id="rep-pilots-body"><tr><td colspan="9" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ صفحة أوردرات الطيار (من التقارير) ══ -->
+    <div class="page" id="page-pilot-orders">
+      <div style="margin-bottom:14px">
+        <button onclick="navigateTo('reports')" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:7px 16px;border-radius:8px;cursor:pointer;font-size:.83rem">
+          ← رجوع للتقارير
+        </button>
+      </div>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px">
+        <div id="pilotOrdersTitle" style="font-size:1.05rem;font-weight:700;color:var(--sky);margin-bottom:4px">📋 أوردرات الطيار</div>
+        <div id="pilotOrdersPeriod" style="font-size:.8rem;color:var(--muted)"></div>
+      </div>
+      <!-- إحصائيات -->
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat-card"><span class="stat-label">عدد الأوردرات</span><span class="stat-value" id="poTotalCount" style="color:var(--sky)">0</span></div>
+        <div class="stat-card"><span class="stat-label">إجمالي التوصيل</span><span class="stat-value" id="poTotalRevenue" style="color:var(--green)">0 ج.م</span></div>
+        <div class="stat-card"><span class="stat-label">عمولة الطيار</span><span class="stat-value" id="poTotalComm" style="color:var(--sky)">0 ج.م</span></div>
+      </div>
+      <!-- فلاتر -->
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;background:var(--panel);padding:14px 16px;border-radius:12px;border:1px solid var(--border)">
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">من تاريخ</label>
+          <input type="date" id="poFromDate" onchange="applyPilotOrdersFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">إلى تاريخ</label>
+          <input type="date" id="poToDate" onchange="applyPilotOrdersFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">بحث</label>
+          <input type="text" id="poSearch" oninput="applyPilotOrdersFilters()" placeholder="رقم طلب أو اسم..." style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem;min-width:160px">
+        </div>
+        <button onclick="clearPilotOrdersFilters()" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:.82rem;height:36px;align-self:flex-end">✕ مسح</button>
+      </div>
+      <div class="sec-header"><span class="sec-title">قائمة الأوردرات المسلَّمة</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>رقم الطلب</th><th>المرسِل</th><th>المستلم</th><th>المنطقة</th>
+            <th>الفرع</th><th>التوصيل</th><th>العمولة</th><th>وقت التسليم</th><th>إجراء</th>
+          </tr></thead>
+          <tbody id="pilotOrdersBody"><tr><td colspan="10" class="empty-row">جاري التحميل…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -4830,8 +5107,17 @@
   <div class="modal-box"><div class="modal-header"><span class="modal-title">🏪 إضافة عميل استلام</span><button class="modal-close" onclick="closeModal('sender')">✕</button></div>
     <form id="addSenderForm" onsubmit="event.preventDefault(); addClient('senders','sender');">
       <div class="form-grid">
-        <div class="form-group full"><label>اسم العميل <span class="req">*</span></label><input id="senderName" type="text" required /></div>
-        <div class="form-group"><label>رقم الهاتف 1 <span class="req">*</span></label><input id="senderPhone1" type="tel" dir="ltr" required /></div>
+        <div class="form-group full" style="position:relative">
+          <label>اسم العميل <span class="req">*</span></label>
+          <input id="senderName" type="text" required autocomplete="off"
+            oninput="clientModalSearch('sender','name')" onfocus="clientModalSearch('sender','name')" onblur="hideClientModalDrop('sender',200)" />
+          <div id="senderModalDrop" style="display:none;position:absolute;top:100%;right:0;left:0;background:var(--panel);border:1px solid var(--border);border-radius:0 0 10px 10px;max-height:200px;overflow-y:auto;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.25)"></div>
+        </div>
+        <div class="form-group" style="position:relative">
+          <label>رقم الهاتف 1 <span class="req">*</span></label>
+          <input id="senderPhone1" type="tel" dir="ltr" required autocomplete="off"
+            oninput="clientModalSearch('sender','phone')" onfocus="clientModalSearch('sender','phone')" onblur="hideClientModalDrop('sender',200)" />
+        </div>
         <div class="form-group"><label>رقم الهاتف 2</label><input id="senderPhone2" type="tel" dir="ltr" /></div>
         <div class="form-group full"><label>العنوان <span class="req">*</span></label><textarea id="senderAddress" placeholder="عنوان العميل أو المحل" required></textarea></div>
       </div>
@@ -4845,8 +5131,17 @@
   <div class="modal-box"><div class="modal-header"><span class="modal-title">📬 إضافة عميل تسليم</span><button class="modal-close" onclick="closeModal('receiver')">✕</button></div>
     <form id="addReceiverForm" onsubmit="event.preventDefault(); addClient('receivers','receiver');">
       <div class="form-grid">
-        <div class="form-group full"><label>اسم العميل <span class="req">*</span></label><input id="receiverName" type="text" required /></div>
-        <div class="form-group"><label>رقم الهاتف 1 <span class="req">*</span></label><input id="receiverPhone1" type="tel" dir="ltr" required /></div>
+        <div class="form-group full" style="position:relative">
+          <label>اسم العميل <span class="req">*</span></label>
+          <input id="receiverName" type="text" required autocomplete="off"
+            oninput="clientModalSearch('receiver','name')" onfocus="clientModalSearch('receiver','name')" onblur="hideClientModalDrop('receiver',200)" />
+          <div id="receiverModalDrop" style="display:none;position:absolute;top:100%;right:0;left:0;background:var(--panel);border:1px solid var(--border);border-radius:0 0 10px 10px;max-height:200px;overflow-y:auto;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.25)"></div>
+        </div>
+        <div class="form-group" style="position:relative">
+          <label>رقم الهاتف 1 <span class="req">*</span></label>
+          <input id="receiverPhone1" type="tel" dir="ltr" required autocomplete="off"
+            oninput="clientModalSearch('receiver','phone')" onfocus="clientModalSearch('receiver','phone')" onblur="hideClientModalDrop('receiver',200)" />
+        </div>
         <div class="form-group"><label>رقم الهاتف 2</label><input id="receiverPhone2" type="tel" dir="ltr" /></div>
         <div class="form-group full"><label>العنوان <span class="req">*</span></label><textarea id="receiverAddress" placeholder="عنوان التوصيل" required></textarea></div>
       </div>
@@ -5042,7 +5337,7 @@
   (function() {
     if (localStorage.getItem("tiar-theme") === "light") document.documentElement.classList.add("light");
   })();
-  const PAGES = ["dashboard","pilots","joinrequests","transfers","clients","orders","delivering","delivered","undelivered","cancelled","hr","accounting","treasury","reports","settings"];
+  const PAGES = ["dashboard","pilots","joinrequests","transfers","clients","orders","delivering","delivered","undelivered","cancelled","hr","accounting","treasury","reports","pilot-orders","settings"];
   function navigateTo(page) {
     if (window.innerWidth <= 900) closeSidebar();
     PAGES.forEach(p => { document.getElementById(`page-${p}`)?.classList.remove("active"); });
@@ -5061,6 +5356,9 @@
     if (page === "reports") {
       if (window.onRepPeriodChange) window.onRepPeriodChange();
       if (window.populateReportFilters) window.populateReportFilters();
+    }
+    if (page === "delivered") {
+      setTimeout(() => { if (window.applyDeliveredFilters) window.applyDeliveredFilters(); }, 100);
     }
     if (page === "orders") {
       // تعبئة قائمة الطيارين في اللوحة
@@ -5122,8 +5420,10 @@
     document.getElementById(`modal-${type}`).classList.remove("open");
     document.body.style.overflow = "";
   }
+  window.closeModal = closeModal; // تعريض للـ module scripts
   let toastTimer;
   function showToast(msg, type) { const t = document.getElementById("toast"); t.textContent = msg; t.className = "show " + type; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "", 3000); }
+  window.showToast = showToast; // تعريض للـ module scripts
 
   /* ── Reset modal functions (clear edit mode) ── */
   function resetPilotModal() {
@@ -5293,6 +5593,11 @@
   </div>
 
 <script>
+  /* ── aliases لـ Firebase من الـ module ── */
+  function _getDB()     { return window._db; }
+  function _getRef(...a){ return window._ref(...a); }
+  async function _upd(r, data) { return window._update(r, data); }
+
   let _ieType = null, _ieRowN = null, _ieClientId = null, _ieCollection = null;
 
   window.openInlineEdit = function(type, rowN) {
@@ -5333,7 +5638,7 @@
     const address = document.getElementById("ie-address").value.trim();
     if (!name) { showToast("الاسم مطلوب", "error"); return; }
     try {
-      await update(ref(db, `${_ieCollection}/${_ieClientId}`), { name, phone1, phone2, address });
+      await _upd(_getRef(_getDB(), `${_ieCollection}/${_ieClientId}`), { name, phone1, phone2, address });
       // تحديث الحقول في الفورم مباشرة
       if (_ieType === 'sender') {
         const state = window._smartSearchState['senderSearchInput'];
@@ -5509,7 +5814,7 @@
 
     return {
       from, to,
-      totalOrders: deliveredInRange.length,
+      totalOrders: totalParcelsOf(deliveredInRange),
       totalRevenue, totalStorePrepaid, totalCommissions, totalExpenses, net,
       branchRows, pilotRows
     };
@@ -5535,8 +5840,18 @@
         <td style="color:var(--sky);font-weight:700">${b.net.toFixed(2)} ج.م</td>
       </tr>`).join("") : `<tr><td colspan="5" class="empty-row">لا توجد بيانات لهذه الفترة</td></tr>`;
 
+    // جمع بيانات الطيارين مع pilotId لاستخدامها في زر الإجراء
+    const { from, to } = buildReportData.__lastRange || { from: data.from, to: data.to };
+    const pilots = window._pilotsData || [];
+
     const pilotsBody = document.getElementById("rep-pilots-body");
-    pilotsBody.innerHTML = data.pilotRows.length ? data.pilotRows.map((p,i) => `
+    pilotsBody.innerHTML = data.pilotRows.length ? data.pilotRows.map((p,i) => {
+      // نبحث عن الطيار في البيانات الأصلية للحصول على id
+      const pilot = pilots.find(pt => pt.name === p.name);
+      const pilotId = pilot ? pilot.id : "";
+      const fromISO = data.from.toISOString().slice(0,10);
+      const toISO   = data.to.toISOString().slice(0,10);
+      return `
       <tr>
         <td class="idx">${i+1}</td>
         <td><b>${p.name}</b></td>
@@ -5546,7 +5861,15 @@
         <td style="color:var(--green)">${p.revenue} ج.م</td>
         <td style="color:var(--sky);font-weight:700">${p.commission.toFixed(2)} ج.م</td>
         <td>${p.net.toFixed(2)} ج.م</td>
-      </tr>`).join("") : `<tr><td colspan="8" class="empty-row">لا توجد بيانات لهذه الفترة</td></tr>`;
+        <td>
+          <button onclick="openPilotOrdersPage('${pilotId}','${p.name}','${fromISO}','${toISO}')"
+            style="background:rgba(14,165,233,.15);color:var(--sky);border:1px solid rgba(14,165,233,.3);
+                   padding:5px 12px;border-radius:7px;cursor:pointer;font-size:.79rem;font-weight:600;white-space:nowrap">
+            📋 أوردرات الطيار
+          </button>
+        </td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="9" class="empty-row">لا توجد بيانات لهذه الفترة</td></tr>`;
   };
 
   window.exportReportExcel = function() {
@@ -5635,6 +5958,205 @@
 </script>
 
 
+<script>
+  /* ══════════════════════════════════════════════════════════════
+     صفحة أوردرات الطيار (من التقارير)
+  ══════════════════════════════════════════════════════════════ */
+  window.openPilotOrdersPage = function(pilotId, pilotName, fromISO, toISO) {
+    // تحديد بيانات الطيار المحدد
+    window._pilotOrdersFilter = { pilotId, pilotName, fromISO, toISO };
+    navigateTo("pilot-orders");
+    renderPilotOrdersPage();
+  };
+
+  window.renderPilotOrdersPage = function() {
+    const f = window._pilotOrdersFilter || {};
+    const { pilotId, pilotName, fromISO, toISO } = f;
+
+    // تحديث عنوان الصفحة
+    const titleEl = document.getElementById("pilotOrdersTitle");
+    if (titleEl) titleEl.textContent = `📋 أوردرات الطيار: ${pilotName || "—"}`;
+
+    // بناء نطاق التاريخ
+    const from = fromISO ? new Date(fromISO + "T00:00:00") : null;
+    const to   = toISO   ? new Date(toISO   + "T23:59:59") : null;
+
+    // عرض الفترة
+    const periodEl = document.getElementById("pilotOrdersPeriod");
+    if (periodEl) {
+      periodEl.textContent = (from && to)
+        ? `الفترة: ${fromISO} — ${toISO}`
+        : "كل الفترات";
+    }
+
+    // تحديث حقول الفلاتر
+    const fromInput = document.getElementById("poFromDate");
+    const toInput   = document.getElementById("poToDate");
+    if (fromInput && fromISO) fromInput.value = fromISO;
+    if (toInput   && toISO)   toInput.value   = toISO;
+
+    applyPilotOrdersFilters();
+  };
+
+  window.applyPilotOrdersFilters = function() {
+    const f = window._pilotOrdersFilter || {};
+    const { pilotId } = f;
+
+    const fromInput  = document.getElementById("poFromDate")?.value;
+    const toInput    = document.getElementById("poToDate")?.value;
+    const searchVal  = (document.getElementById("poSearch")?.value || "").trim().toLowerCase();
+
+    const from = fromInput ? new Date(fromInput + "T00:00:00") : null;
+    const to   = toInput   ? new Date(toInput   + "T23:59:59") : null;
+
+    const orders  = window._ordersData || [];
+    const pilots  = window._pilotsData || [];
+    const branches = window._branchesList || [];
+
+    let filtered = orders.filter(o => {
+      if (o.status !== "تم التسليم") return false;
+      if (pilotId && o.pilotId !== pilotId) return false;
+      const dt = new Date(o.deliveredAt || o.createdAt);
+      if (from && dt < from) return false;
+      if (to   && dt > to)   return false;
+      if (searchVal) {
+        const orderNo = (o.orderNum || o.id || "").toLowerCase();
+        const sender  = (o.senderName || "").toLowerCase();
+        const recv    = ((o.deliveries || []).map(d => d.receiverName || "").join(" ")).toLowerCase();
+        if (!orderNo.includes(searchVal) && !sender.includes(searchVal) && !recv.includes(searchVal)) return false;
+      }
+      return true;
+    });
+
+    // إحصائيات
+    const totalCount    = filtered.length;
+    const totalRevenue  = filtered.reduce((s,o) => s + (Number(o.totalDeliveryPrice) || 0), 0);
+    const pilot = pilots.find(p => p.id === pilotId);
+    const totalComm     = filtered.reduce((s,o) => {
+      const pt = pilots.find(p => p.id === o.pilotId);
+      return s + (window.pilotCommissionFor ? pilotCommissionFor(pt, o) : 0);
+    }, 0);
+
+    const countEl = document.getElementById("poTotalCount");
+    const revEl   = document.getElementById("poTotalRevenue");
+    const commEl  = document.getElementById("poTotalComm");
+    if (countEl)  countEl.textContent  = totalCount + " طلب";
+    if (revEl)    revEl.textContent    = totalRevenue.toFixed(2) + " ج.م";
+    if (commEl)   commEl.textContent   = totalComm.toFixed(2) + " ج.م";
+
+    // رسم الجدول
+    const tbody = document.getElementById("pilotOrdersBody");
+    if (!tbody) return;
+
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty-row">لا توجد أوردرات لهذا الطيار في هذه الفترة</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered.map((o, i) => {
+      const branch  = branches.find(b => b.id === o.branchId);
+      const dt      = o.deliveredAt || o.createdAt;
+      const dtStr   = dt ? new Date(dt).toLocaleString("ar-EG") : "—";
+      const deliveries = o.deliveries || [];
+      const recvNames = deliveries.map(d => d.receiverName || "—").join("، ");
+      const recvAreas = deliveries.map(d => d.zone || d.address || "—").join("، ");
+      const commission = pilot ? (window.pilotCommissionFor ? pilotCommissionFor(pilot, o) : 0) : 0;
+      return `
+        <tr>
+          <td class="idx">${i+1}</td>
+          <td style="font-weight:700;color:var(--sky)">${o.orderNum || o.id || "—"}</td>
+          <td>${o.senderName || "—"}</td>
+          <td style="font-size:.8rem">${recvNames}</td>
+          <td style="font-size:.8rem;color:var(--muted)">${recvAreas}</td>
+          <td>${branch ? branch.name : "—"}</td>
+          <td style="color:var(--green);font-weight:600">${Number(o.totalDeliveryPrice || 0).toFixed(2)} ج.م</td>
+          <td style="color:var(--sky)">${commission.toFixed(2)} ج.م</td>
+          <td style="font-size:.78rem;color:var(--muted)">${dtStr}</td>
+          <td><button class="view-btn" onclick="viewOrderDetails('${o.id}')">🔍 تفاصيل</button></td>
+        </tr>`;
+    }).join("");
+  };
+
+  window.clearPilotOrdersFilters = function() {
+    const f = window._pilotOrdersFilter || {};
+    const fromEl = document.getElementById("poFromDate");
+    const toEl   = document.getElementById("poToDate");
+    const srEl   = document.getElementById("poSearch");
+    if (fromEl) fromEl.value = f.fromISO || "";
+    if (toEl)   toEl.value   = f.toISO   || "";
+    if (srEl)   srEl.value   = "";
+    applyPilotOrdersFilters();
+  };
+
+  /* ══════════════════════════════════════════════════════════════
+     فلاتر صفحة الطلبات المسلَّمة (الإدارة)
+  ══════════════════════════════════════════════════════════════ */
+  window._deliveredAllOrders = []; // يُحدَّث من renderDeliveredOrders
+
+  window.populateDeliveredFilters = function() {
+    const pilotSel  = document.getElementById("deliveredPilotFilter");
+    const branchSel = document.getElementById("deliveredBranchFilter");
+    if (pilotSel && pilotSel.options.length <= 1) {
+      const pilots = window._pilotsData || [];
+      pilotSel.innerHTML = `<option value="">— كل الطيارين —</option>` +
+        pilots.map(p => `<option value="${p.id}">${p.name}</option>`).join("");
+    }
+    if (branchSel && branchSel.options.length <= 1) {
+      const branches = window._branchesList || [];
+      branchSel.innerHTML = `<option value="">— كل الفروع —</option>` +
+        branches.map(b => `<option value="${b.id}">${b.name}</option>`).join("");
+    }
+  };
+
+  window.applyDeliveredFilters = function() {
+    populateDeliveredFilters();
+    const pilotId   = document.getElementById("deliveredPilotFilter")?.value  || "";
+    const branchId  = document.getElementById("deliveredBranchFilter")?.value || "";
+    const fromVal   = document.getElementById("deliveredFromDate")?.value;
+    const toVal     = document.getElementById("deliveredToDate")?.value;
+    const searchVal = (document.getElementById("deliveredSearchInput")?.value || "").trim().toLowerCase();
+
+    const from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+    const to   = toVal   ? new Date(toVal   + "T23:59:59") : null;
+
+    const allOrders = window._ordersData || [];
+    let filtered = allOrders.filter(o => {
+      if (o.status !== "تم التسليم") return false;
+      if (pilotId  && o.pilotId  !== pilotId)  return false;
+      if (branchId && o.branchId !== branchId) return false;
+      if (from || to) {
+        const dt = new Date(o.deliveredAt || o.createdAt);
+        if (from && dt < from) return false;
+        if (to   && dt > to)   return false;
+      }
+      if (searchVal) {
+        const orderNo = (o.orderNum || o.id || "").toLowerCase();
+        const sender  = (o.senderName  || "").toLowerCase();
+        const recv    = ((o.deliveries || []).map(d => d.receiverName || "").join(" ")).toLowerCase();
+        if (!orderNo.includes(searchVal) && !sender.includes(searchVal) && !recv.includes(searchVal)) return false;
+      }
+      return true;
+    });
+
+    const filteredCountEl = document.getElementById("totalDeliveredFiltered");
+    if (filteredCountEl) filteredCountEl.textContent = filtered.length;
+
+    // إعادة رسم الجدول بالبيانات المُفلترة
+    if (window._renderDeliveredTable) {
+      window._renderDeliveredTable(filtered);
+    }
+  };
+
+  window.clearDeliveredFilters = function() {
+    const ids = ["deliveredPilotFilter","deliveredBranchFilter","deliveredFromDate","deliveredToDate","deliveredSearchInput"];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    applyDeliveredFilters();
+  };
+</script>
+
   <div id="modal-edit-order-data" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
     <div style="background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:28px 32px;width:min(600px,95vw);max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
@@ -5693,7 +6215,7 @@
     const o = (window._ordersData || []).find(x => x.id === _editingOrderId);
     if (!o) return;
     try {
-      await update(ref(db, "orders/" + _editingOrderId), {
+      await _upd(_getRef(_getDB(), "orders/" + _editingOrderId), {
         senderName   : document.getElementById("edit-sender-name").value.trim(),
         senderPhone  : document.getElementById("edit-sender-phone").value.trim(),
         senderPhone2 : document.getElementById("edit-sender-phone2").value.trim(),
@@ -5701,7 +6223,7 @@
       });
       const deliveries = o.deliveries || [];
       for (let i = 0; i < deliveries.length; i++) {
-        await update(ref(db, "orders/" + _editingOrderId + "/deliveries/" + i), {
+        await _upd(_getRef(_getDB(), "orders/" + _editingOrderId + "/deliveries/" + i), {
           receiverName  : document.getElementById("edit-recv-name-"+i).value.trim(),
           receiverPhone : document.getElementById("edit-recv-phone-"+i).value.trim(),
           receiverPhone2: document.getElementById("edit-recv-phone2-"+i).value.trim(),

@@ -26,6 +26,15 @@
     const app = initializeApp(firebaseConfig);
     const db  = getDatabase(app);
 
+    /* ── تعريض Firebase للـ scripts خارج الـ module ─────────────────── */
+    window._db     = db;
+    window._ref    = ref;
+    window._update = update;
+    window._push   = push;
+    window._set    = set;
+    window._remove = remove;
+    window._get    = get;
+
     /* ── parcelCount helpers ─────────────────────────────────────── */
     function parcelCount(order) {
       const cnt = (order?.deliveries || []).length;
@@ -265,7 +274,7 @@
     /* ═══════════════════════════════════════════════════════════════
        NAVIGATION
     ═══════════════════════════════════════════════════════════════ */
-    const PAGES = ["orders", "delivering", "delivered", "undelivered", "cancelled", "pilots", "transfers", "cashstores", "accounting", "reports"];
+    const PAGES = ["orders", "delivering", "delivered", "undelivered", "cancelled", "pilots", "transfers", "cashstores", "accounting", "reports", "pilot-orders"];
     window.navigateTo = function(page) {
       PAGES.forEach(p => document.getElementById(`page-${p}`)?.classList.remove("active"));
       document.getElementById(`page-${page}`)?.classList.add("active");
@@ -283,6 +292,12 @@
         if (window.populateReportFilters) window.populateReportFilters();
       }
       if (page === "accounting" && window.renderAccountingPage) window.renderAccountingPage();
+      if (page === "delivered") {
+        setTimeout(() => {
+          if (window.populateBrDeliveredFilters) window.populateBrDeliveredFilters();
+          if (window.applyBrDeliveredFilters) window.applyBrDeliveredFilters();
+        }, 100);
+      }
     };
 
     /* ═══════════════════════════════════════════════════════════════
@@ -624,10 +639,14 @@
       const delivered = window._ordersData.filter(o => o.status === "تم التسليم");
       const dtbody    = document.getElementById("deliveredOrdersBody");
       if (!dtbody) return;
-      if (!delivered.length) {
-        dtbody.innerHTML = `<tr><td colspan="10" class="empty-row">لا توجد طلبات مسلَّمة بعد</td></tr>`;
-      } else {
-        dtbody.innerHTML = delivered.map((o, i) => {
+
+      // تعريف دالة الرسم القابلة لإعادة الاستخدام مع الفلاتر
+      window._brRenderDeliveredTable = function(ordersArr) {
+        if (!ordersArr.length) {
+          dtbody.innerHTML = `<tr><td colspan="10" class="empty-row">لا توجد طلبات مسلَّمة بعد</td></tr>`;
+          return;
+        }
+        dtbody.innerHTML = ordersArr.map((o, i) => {
           const delivSummary = (o.deliveries || []).map(d =>
             `<span style="display:block;font-size:.74rem;color:var(--muted)">${d.receiverName || "—"} — ${d.zoneName || "—"}</span>`
           ).join("");
@@ -644,8 +663,22 @@
             <td><button class="view-btn" onclick="viewOrderDetails('${o.id}')">🔍 تفاصيل</button></td>
           </tr>`;
         }).join("");
+        toggleNotesColumn("th-notes-delivered", ordersArr);
+      };
+
+      // تحديث الإجمالي الكلي
+      setText("stat-delivered-total", totalParcelsOf(delivered));
+      const filteredEl = document.getElementById("stat-delivered-filtered");
+
+      // تطبيق الفلاتر إن وُجدت، أو رسم الكل
+      if (window.applyBrDeliveredFilters && document.getElementById("brDeliveredPilotFilter")?.options.length > 1) {
+        if (window.populateBrDeliveredFilters) window.populateBrDeliveredFilters();
+        window.applyBrDeliveredFilters();
+      } else {
+        window._brRenderDeliveredTable(delivered);
+        if (filteredEl) filteredEl.textContent = totalParcelsOf(delivered);
+        if (window.populateBrDeliveredFilters) window.populateBrDeliveredFilters();
       }
-      toggleNotesColumn("th-notes-delivered", delivered);
     }
 
     /* ═══════════════════════════════════════════════════════════════
@@ -1551,6 +1584,14 @@
       document.body.appendChild(box);
     };
 
+    function orderSourceBadge(o) {
+      if (o.source === "store")  return `<div style="display:inline-flex;align-items:center;gap:4px;background:rgba(168,85,247,.15);color:#a855f7;border:1px solid rgba(168,85,247,.3);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">🏪 تطبيق المحل</div>${o.addedBy ? `<div style="font-size:.69rem;color:var(--muted);margin-top:2px">${o.addedBy}</div>` : ""}`;
+      if (o.source === "branch") return `<div style="display:inline-flex;align-items:center;gap:4px;background:rgba(14,165,233,.15);color:var(--sky);border:1px solid rgba(14,165,233,.3);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">🏢 موظف الفرع</div>${o.addedBy ? `<div style="font-size:.69rem;color:var(--muted);margin-top:2px">${o.addedBy}</div>` : ""}`;
+      if (o.source === "admin")  return `<div style="display:inline-flex;align-items:center;gap:4px;background:rgba(249,115,22,.15);color:var(--orange);border:1px solid rgba(249,115,22,.3);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">⚙️ الإدارة</div>${o.addedBy ? `<div style="font-size:.69rem;color:var(--muted);margin-top:2px">${o.addedBy}</div>` : ""}`;
+      if (o.addedBy) return `<div style="display:inline-flex;align-items:center;gap:4px;background:rgba(122,154,184,.12);color:var(--muted);border:1px solid rgba(122,154,184,.25);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">👤 ${o.addedBy}</div>`;
+      return `<span style="color:var(--muted);font-size:.78rem">—</span>`;
+    }
+
     window.viewOrderDetails = function(orderId) {
       const o = (window._ordersData || []).find(x => x.id === orderId);
       if (!o) return;
@@ -1631,37 +1672,99 @@
           <!-- معلومات الطلب -->
           <div class="od-card">
             <div class="od-card-title">📋 معلومات الطلب</div>
+
+            <!-- صف: رقم الطلب + الإجمالي -->
             <div class="od-2col">
               <div class="od-info-block">
                 <span class="od-info-label">رقم الطلب</span>
-                <span class="od-info-val" style="color:var(--sky);font-weight:800">${o.orderNum || "—"}</span>
+                <span class="od-info-val" style="color:var(--sky);font-weight:800;font-size:1.05rem">${o.orderNum || "—"}</span>
               </div>
               <div class="od-info-block">
                 <span class="od-info-label">إجمالي التوصيل</span>
                 <span class="od-info-val od-total">${o.totalDeliveryPrice || 0} ج.م</span>
               </div>
             </div>
-            ${o.pilotName ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">الطيار</span><span class="od-info-val" style="color:var(--sky)">🛵 ${o.pilotName}</span></div>` : ""}
-            ${o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">وقت التسليم</span><span class="od-info-val">${fmt(o.deliveredAt)}</span></div>` : ""}
-            <div class="od-info-block" style="margin-top:8px">
-              <span class="od-info-label">📌 مصدر الطلب</span>
-              <span class="od-info-val">${
-                o.source === "store"  ? `<span style="background:rgba(168,85,247,.15);color:#a855f7;border:1px solid rgba(168,85,247,.3);border-radius:6px;padding:3px 9px;font-size:.78rem;font-weight:700">🏪 تطبيق المحل${o.addedBy ? ' — ' + o.addedBy : ''}</span>` :
-                o.source === "branch" ? `<span style="background:rgba(14,165,233,.15);color:var(--sky);border:1px solid rgba(14,165,233,.3);border-radius:6px;padding:3px 9px;font-size:.78rem;font-weight:700">🏢 موظف الفرع${o.addedBy ? ' — ' + o.addedBy : ''}</span>` :
-                o.source === "admin"  ? `<span style="background:rgba(249,115,22,.15);color:var(--orange);border:1px solid rgba(249,115,22,.3);border-radius:6px;padding:3px 9px;font-size:.78rem;font-weight:700">⚙️ الإدارة${o.addedBy ? ' — ' + o.addedBy : ''}</span>` :
-                o.addedBy ? `<span style="color:var(--muted);font-size:.82rem">👤 ${o.addedBy}</span>` : '<span style="color:var(--muted)">—</span>'
-              }</span>
-            </div>
-            <div class="od-info-block" style="margin-top:8px">
-              <span class="od-info-label">تاريخ الإنشاء / وصول الطلب للفرع</span>
-              <span class="od-info-val" style="font-size:.82rem">${fmt(o.createdAt)}</span>
-            </div>
-            ${!o.deliveredAt && o.createdAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ المدة المنقضية منذ وصول الطلب للفرع</span><span class="od-info-val" id="od-timer-${o.id}" style="color:var(--orange)">${formatElapsed(o.createdAt)}</span></div>` : ""}
-            ${o.statusSince && o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ المدة التي استغرقها الطيار للتسليم</span><span class="od-info-val" style="color:var(--sky)">${fmtDur(o.statusSince, o.deliveredAt)}</span></div>` : ""}
-            ${o.createdAt && o.deliveredAt ? `<div class="od-info-block" style="margin-top:8px"><span class="od-info-label">⏱️ إجمالي المدة من الوصول للفرع حتى التسليم</span><span class="od-info-val" style="color:var(--green);font-weight:800">${fmtDur(o.createdAt, o.deliveredAt)}</span></div>` : ""}
-          </div>
 
-          <!-- جهة الاستلام (التاجر) -->
+            <!-- صف: الفرع + المصدر -->
+            <div class="od-2col" style="margin-top:8px">
+              <div class="od-info-block">
+                <span class="od-info-label">🏢 الفرع</span>
+                <span class="od-info-val">${o.branchName || "—"}</span>
+              </div>
+              <div class="od-info-block">
+                <span class="od-info-label">📌 مصدر الطلب</span>
+                <span class="od-info-val">${orderSourceBadge(o)}</span>
+              </div>
+            </div>
+
+            <!-- الطيار -->
+            ${o.pilotName ? `
+            <div class="od-info-block" style="margin-top:10px;padding:10px 14px;background:rgba(14,165,233,.07);border:1px solid rgba(14,165,233,.18);border-radius:10px">
+              <span class="od-info-label">🛵 المندوب</span>
+              <span class="od-info-val" style="color:var(--sky);font-weight:700;font-size:.95rem">${o.pilotName}</span>
+            </div>` : ""}
+
+            <!-- ── خط زمني ── -->
+            <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+              <div style="font-size:.78rem;font-weight:700;color:var(--muted);margin-bottom:10px;letter-spacing:.04em">⏱️ الخط الزمني للطلب</div>
+
+              <!-- 1. وصول الطلب للفرع -->
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(14,165,233,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">📥</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">وصول الطلب للفرع</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--text)">${fmt(o.createdAt)}</div>
+                </div>
+              </div>
+
+              <!-- 2. تحميل على المندوب -->
+              ${o.statusSince ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(249,115,22,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">🛵</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">تحميل الطلب على المندوب</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--text)">${fmt(o.statusSince)}</div>
+                  ${o.createdAt ? `<div style="font-size:.75rem;color:var(--orange);margin-top:2px">⏳ انتظر في الفرع: ${fmtDur(o.createdAt, o.statusSince)}</div>` : ""}
+                </div>
+              </div>` : ""}
+
+              <!-- 3. التسليم أو الحالة الحالية -->
+              ${o.deliveredAt ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(34,197,94,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">✅</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">تم التسليم</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--green)">${fmt(o.deliveredAt)}</div>
+                  ${o.statusSince ? `<div style="font-size:.75rem;color:var(--sky);margin-top:2px">🛵 استغرق التوصيل: ${fmtDur(o.statusSince, o.deliveredAt)}</div>` : ""}
+                </div>
+              </div>` : o.undeliveredAt ? `
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(239,68,68,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">↩️</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">لم يتم التوصيل</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--red)">${fmt(o.undeliveredAt)}</div>
+                  ${o.undeliveredReason ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">📝 ${o.undeliveredReason}</div>` : ""}
+                </div>
+              </div>` : `
+              <div style="display:flex;align-items:flex-start;gap:10px">
+                <div style="width:32px;height:32px;border-radius:50%;background:rgba(249,115,22,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">🔄</div>
+                <div>
+                  <div style="font-size:.78rem;color:var(--muted)">جاري التوصيل</div>
+                  <div style="font-size:.85rem;font-weight:600;color:var(--orange)" id="od-timer-${o.id}">${formatElapsed(o.statusSince || o.createdAt)}</div>
+                </div>
+              </div>`}
+
+              <!-- ملخص الأوقات للطلبات المسلّمة -->
+              ${o.deliveredAt ? `
+              <div style="margin-top:12px;padding:10px 14px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;display:flex;flex-direction:column;gap:6px">
+                <div style="font-size:.76rem;font-weight:700;color:var(--green);margin-bottom:2px">📊 ملخص الأوقات</div>
+                ${o.createdAt && o.statusSince ? `<div style="display:flex;justify-content:space-between;font-size:.78rem"><span style="color:var(--muted)">⏳ انتظار في الفرع</span><span style="font-weight:600;color:var(--orange)">${fmtDur(o.createdAt, o.statusSince)}</span></div>` : ""}
+                ${o.statusSince && o.deliveredAt ? `<div style="display:flex;justify-content:space-between;font-size:.78rem"><span style="color:var(--muted)">🛵 مدة التوصيل</span><span style="font-weight:600;color:var(--sky)">${fmtDur(o.statusSince, o.deliveredAt)}</span></div>` : ""}
+                ${o.createdAt && o.deliveredAt ? `<div style="display:flex;justify-content:space-between;font-size:.78rem;border-top:1px solid rgba(34,197,94,.2);padding-top:6px;margin-top:2px"><span style="color:var(--muted)">⏱️ إجمالي من الفرع حتى التسليم</span><span style="font-weight:800;color:var(--green)">${fmtDur(o.createdAt, o.deliveredAt)}</span></div>` : ""}
+              </div>` : ""}
+            </div>
+
+          </div>
           <div class="od-card od-card-pickup">
             <div class="od-card-title">🏪 جهة الاستلام</div>
             <span class="od-name">${o.senderName || "—"}</span>
@@ -1685,13 +1788,14 @@
           </div>` : ""}
         </div>`;
       document.body.appendChild(box);
-      if (!o.deliveredAt && o.createdAt) {
+      if (!o.deliveredAt && !o.undeliveredAt) {
+        const timerBase = o.statusSince || o.createdAt;
         const odTimerEl = document.getElementById(`od-timer-${o.id}`);
-        if (odTimerEl) {
+        if (odTimerEl && timerBase) {
           const odInt = setInterval(() => {
             const el = document.getElementById(`od-timer-${o.id}`);
             if (!el || !document.getElementById("_odBox")) { clearInterval(odInt); return; }
-            el.textContent = formatElapsed(o.createdAt);
+            el.textContent = formatElapsed(timerBase);
           }, 1000);
         }
       }
@@ -3358,6 +3462,32 @@
           <span class="stat-label">إجمالي المسلَّمة</span>
           <span class="stat-value" id="stat-delivered-total" style="color:var(--green)">0</span>
         </div>
+        <div class="stat-card">
+          <span class="stat-label">المعروضة بعد الفلتر</span>
+          <span class="stat-value" id="stat-delivered-filtered" style="color:var(--sky)">0</span>
+        </div>
+      </div>
+      <!-- شريط الفلاتر -->
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;background:var(--panel);padding:14px 16px;border-radius:12px;border:1px solid var(--border)">
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">الطيار</label>
+          <select id="brDeliveredPilotFilter" onchange="applyBrDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);min-width:130px;font-size:.83rem">
+            <option value="">— كل الطيارين —</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">من تاريخ</label>
+          <input type="date" id="brDeliveredFromDate" onchange="applyBrDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">إلى تاريخ</label>
+          <input type="date" id="brDeliveredToDate" onchange="applyBrDeliveredFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">بحث</label>
+          <input type="text" id="brDeliveredSearch" oninput="applyBrDeliveredFilters()" placeholder="رقم طلب أو اسم..." style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem;min-width:150px">
+        </div>
+        <button onclick="clearBrDeliveredFilters()" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:.82rem;height:36px;align-self:flex-end">✕ مسح الفلاتر</button>
       </div>
       <div class="sec-header">
         <span class="sec-title">✅ الطلبات المسلَّمة</span>
@@ -3626,9 +3756,54 @@
         <table>
           <thead><tr>
             <th>#</th><th>الطيار</th><th>نوع العمولة</th><th>عدد الطلبات</th>
-            <th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th><th>عهد المحلات</th>
+            <th>إجمالي التوصيل</th><th>عمولة الطيار</th><th>صافي الفرع</th><th>عهد المحلات</th><th>إجراء</th>
           </tr></thead>
-          <tbody id="rep-pilots-body"><tr><td colspan="8" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
+          <tbody id="rep-pilots-body"><tr><td colspan="9" class="empty-row">اختر الفترة واضغط توليد التقرير</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── PAGE: PILOT-ORDERS (أوردرات طيار محدد) ── -->
+    <div class="page" id="page-pilot-orders">
+      <div style="margin-bottom:14px">
+        <button onclick="navigateTo('reports')" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:7px 16px;border-radius:8px;cursor:pointer;font-size:.83rem">
+          ← رجوع للتقارير
+        </button>
+      </div>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px">
+        <div id="pilotOrdersTitle" style="font-size:1.05rem;font-weight:700;color:var(--sky);margin-bottom:4px">📋 أوردرات الطيار</div>
+        <div id="pilotOrdersPeriod" style="font-size:.8rem;color:var(--muted)"></div>
+      </div>
+      <!-- إحصائيات -->
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat-card"><span class="stat-label">عدد الأوردرات</span><span class="stat-value" id="poTotalCount" style="color:var(--sky)">0</span></div>
+        <div class="stat-card"><span class="stat-label">إجمالي التوصيل</span><span class="stat-value" id="poTotalRevenue" style="color:var(--green)">0 ج.م</span></div>
+        <div class="stat-card"><span class="stat-label">عمولة الطيار</span><span class="stat-value" id="poTotalComm" style="color:var(--sky)">0 ج.م</span></div>
+      </div>
+      <!-- فلاتر -->
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;background:var(--panel);padding:14px 16px;border-radius:12px;border:1px solid var(--border)">
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">من تاريخ</label>
+          <input type="date" id="poFromDate" onchange="applyPilotOrdersFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">إلى تاريخ</label>
+          <input type="date" id="poToDate" onchange="applyPilotOrdersFilters()" style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem">
+        </div>
+        <div>
+          <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">بحث</label>
+          <input type="text" id="poSearch" oninput="applyPilotOrdersFilters()" placeholder="رقم طلب أو اسم..." style="padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.83rem;min-width:160px">
+        </div>
+        <button onclick="clearPilotOrdersFilters()" style="background:var(--card);border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:.82rem;height:36px;align-self:flex-end">✕ مسح</button>
+      </div>
+      <div class="sec-header"><span class="sec-title">قائمة الأوردرات المسلَّمة</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>رقم الطلب</th><th>المرسِل</th><th>المستلم</th><th>المنطقة</th>
+            <th>التوصيل</th><th>العمولة</th><th>وقت التسليم</th><th>إجراء</th>
+          </tr></thead>
+          <tbody id="pilotOrdersBody"><tr><td colspan="9" class="empty-row">جاري التحميل…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -4023,6 +4198,11 @@
   </div>
 
 <script>
+  /* ── aliases لـ Firebase من الـ module ── */
+  function _getDB()      { return window._db; }
+  function _getRef(...a) { return window._ref(...a); }
+  async function _upd(r, data) { return window._update(r, data); }
+
   let _ieType = null, _ieRowN = null, _ieClientId = null, _ieCollection = null;
 
   window.openInlineEdit = function(type, rowN) {
@@ -4063,7 +4243,7 @@
     const address = document.getElementById("ie-address").value.trim();
     if (!name) { showToast("الاسم مطلوب", "error"); return; }
     try {
-      await update(ref(db, `${_ieCollection}/${_ieClientId}`), { name, phone1, phone2, address });
+      await _upd(_getRef(_getDB(), `${_ieCollection}/${_ieClientId}`), { name, phone1, phone2, address });
       if (_ieType === 'sender') {
         const state = window._smartSearchState['bOrderSenderSearchInput'];
         if (state?.selectedData) { state.selectedData.name = name; state.selectedData.phone1 = phone1; state.selectedData.phone2 = phone2; state.selectedData.address = address; }
@@ -4144,7 +4324,7 @@
     const o = (window._ordersData || []).find(x => x.id === _editingOrderId);
     if (!o) return;
     try {
-      await update(ref(db, "orders/" + _editingOrderId), {
+      await _upd(_getRef(_getDB(), "orders/" + _editingOrderId), {
         senderName   : document.getElementById("edit-sender-name").value.trim(),
         senderPhone  : document.getElementById("edit-sender-phone").value.trim(),
         senderPhone2 : document.getElementById("edit-sender-phone2").value.trim(),
@@ -4152,7 +4332,7 @@
       });
       const deliveries = o.deliveries || [];
       for (let i = 0; i < deliveries.length; i++) {
-        await update(ref(db, "orders/" + _editingOrderId + "/deliveries/" + i), {
+        await _upd(_getRef(_getDB(), "orders/" + _editingOrderId + "/deliveries/" + i), {
           receiverName  : document.getElementById("edit-recv-name-"+i).value.trim(),
           receiverPhone : document.getElementById("edit-recv-phone-"+i).value.trim(),
           receiverPhone2: document.getElementById("edit-recv-phone2-"+i).value.trim(),
@@ -4370,7 +4550,13 @@
   window.renderReportsPage = function() {
     const data = buildReportData();
     const pilotsBody = document.getElementById("rep-pilots-body");
-    pilotsBody.innerHTML = data.pilotRows.length ? data.pilotRows.map((p,i) => `
+    const pilots = (window._allPilotsData || window._pilotsData || []);
+    pilotsBody.innerHTML = data.pilotRows.length ? data.pilotRows.map((p,i) => {
+      const pilot = pilots.find(pt => pt.name === p.name);
+      const pilotId = pilot ? pilot.id : "";
+      const fromISO = data.from.toISOString().slice(0,10);
+      const toISO   = data.to.toISOString().slice(0,10);
+      return `
       <tr>
         <td class="idx">${i+1}</td>
         <td><b>${p.name}</b></td>
@@ -4380,7 +4566,15 @@
         <td style="color:var(--sky);font-weight:700">${p.commission.toFixed(2)} ج.م</td>
         <td>${p.net.toFixed(2)} ج.م</td>
         <td style="color:var(--orange)">${p.custody.toFixed(2)} ج.م</td>
-      </tr>`).join("") : `<tr><td colspan="8" class="empty-row">لا توجد بيانات لهذه الفترة</td></tr>`;
+        <td>
+          <button onclick="openPilotOrdersPage('${pilotId}','${p.name}','${fromISO}','${toISO}')"
+            style="background:rgba(14,165,233,.15);color:var(--sky);border:1px solid rgba(14,165,233,.3);
+                   padding:5px 12px;border-radius:7px;cursor:pointer;font-size:.79rem;font-weight:600;white-space:nowrap">
+            📋 أوردرات الطيار
+          </button>
+        </td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="9" class="empty-row">لا توجد بيانات لهذه الفترة</td></tr>`;
   };
 
   window.exportReportExcel = function() {
@@ -4434,6 +4628,176 @@
     w.document.write(html);
     w.document.close();
   };
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   صفحة أوردرات الطيار (من التقارير) — تطبيق الفروع
+══════════════════════════════════════════════════════════════ */
+window.openPilotOrdersPage = function(pilotId, pilotName, fromISO, toISO) {
+  window._pilotOrdersFilter = { pilotId, pilotName, fromISO, toISO };
+  navigateTo("pilot-orders");
+  renderPilotOrdersPage();
+};
+
+window.renderPilotOrdersPage = function() {
+  const f = window._pilotOrdersFilter || {};
+  const { pilotId, pilotName, fromISO, toISO } = f;
+
+  const titleEl = document.getElementById("pilotOrdersTitle");
+  if (titleEl) titleEl.textContent = `📋 أوردرات الطيار: ${pilotName || "—"}`;
+
+  const periodEl = document.getElementById("pilotOrdersPeriod");
+  if (periodEl) periodEl.textContent = (fromISO && toISO) ? `الفترة: ${fromISO} — ${toISO}` : "كل الفترات";
+
+  const fromInput = document.getElementById("poFromDate");
+  const toInput   = document.getElementById("poToDate");
+  if (fromInput && fromISO) fromInput.value = fromISO;
+  if (toInput   && toISO)   toInput.value   = toISO;
+
+  applyPilotOrdersFilters();
+};
+
+window.applyPilotOrdersFilters = function() {
+  const f = window._pilotOrdersFilter || {};
+  const { pilotId } = f;
+
+  const fromInput = document.getElementById("poFromDate")?.value;
+  const toInput   = document.getElementById("poToDate")?.value;
+  const searchVal = (document.getElementById("poSearch")?.value || "").trim().toLowerCase();
+
+  const from = fromInput ? new Date(fromInput + "T00:00:00") : null;
+  const to   = toInput   ? new Date(toInput   + "T23:59:59") : null;
+
+  const orders  = window._ordersData || [];
+  const pilots  = (window._allPilotsData || window._pilotsData || []);
+
+  let filtered = orders.filter(o => {
+    if (o.status !== "تم التسليم") return false;
+    if (pilotId && o.pilotId !== pilotId) return false;
+    const dt = new Date(o.deliveredAt || o.createdAt);
+    if (from && dt < from) return false;
+    if (to   && dt > to)   return false;
+    if (searchVal) {
+      const orderNo = (o.orderNum || o.id || "").toLowerCase();
+      const sender  = (o.senderName || "").toLowerCase();
+      const recv    = ((o.deliveries || []).map(d => d.receiverName || "").join(" ")).toLowerCase();
+      if (!orderNo.includes(searchVal) && !sender.includes(searchVal) && !recv.includes(searchVal)) return false;
+    }
+    return true;
+  });
+
+  const pilot = pilots.find(p => p.id === pilotId);
+  const totalRevenue = filtered.reduce((s,o) => s + (Number(o.totalDeliveryPrice) || 0), 0);
+  const totalComm    = filtered.reduce((s,o) => {
+    const pt = pilots.find(p => p.id === o.pilotId);
+    return s + (window.pilotCommissionFor ? pilotCommissionFor(pt, o) : 0);
+  }, 0);
+
+  const countEl = document.getElementById("poTotalCount");
+  const revEl   = document.getElementById("poTotalRevenue");
+  const commEl  = document.getElementById("poTotalComm");
+  if (countEl) countEl.textContent  = filtered.length + " طلب";
+  if (revEl)   revEl.textContent    = totalRevenue.toFixed(2) + " ج.م";
+  if (commEl)  commEl.textContent   = totalComm.toFixed(2) + " ج.م";
+
+  const tbody = document.getElementById("pilotOrdersBody");
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-row">لا توجد أوردرات لهذا الطيار في هذه الفترة</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((o, i) => {
+    const dt     = o.deliveredAt || o.createdAt;
+    const dtStr  = dt ? new Date(dt).toLocaleString("ar-EG") : "—";
+    const deliveries = o.deliveries || [];
+    const recvNames  = deliveries.map(d => d.receiverName || "—").join("، ");
+    const recvAreas  = deliveries.map(d => d.zone || d.zoneName || d.address || "—").join("، ");
+    const commission = pilot ? (window.pilotCommissionFor ? pilotCommissionFor(pilot, o) : 0) : 0;
+    return `
+      <tr>
+        <td class="idx">${i+1}</td>
+        <td style="font-weight:700;color:var(--sky)">${o.orderNum || o.id || "—"}</td>
+        <td>${o.senderName || "—"}</td>
+        <td style="font-size:.8rem">${recvNames}</td>
+        <td style="font-size:.8rem;color:var(--muted)">${recvAreas}</td>
+        <td style="color:var(--green);font-weight:600">${Number(o.totalDeliveryPrice || 0).toFixed(2)} ج.م</td>
+        <td style="color:var(--sky)">${commission.toFixed(2)} ج.م</td>
+        <td style="font-size:.78rem;color:var(--muted)">${dtStr}</td>
+        <td><button class="view-btn" onclick="viewOrderDetails('${o.id}')">🔍 تفاصيل</button></td>
+      </tr>`;
+  }).join("");
+};
+
+window.clearPilotOrdersFilters = function() {
+  const f = window._pilotOrdersFilter || {};
+  const fromEl = document.getElementById("poFromDate");
+  const toEl   = document.getElementById("poToDate");
+  const srEl   = document.getElementById("poSearch");
+  if (fromEl) fromEl.value = f.fromISO || "";
+  if (toEl)   toEl.value   = f.toISO   || "";
+  if (srEl)   srEl.value   = "";
+  applyPilotOrdersFilters();
+};
+
+/* ══════════════════════════════════════════════════════════════
+   فلاتر صفحة الطلبات المسلَّمة — تطبيق الفروع
+══════════════════════════════════════════════════════════════ */
+window.populateBrDeliveredFilters = function() {
+  const pilotSel = document.getElementById("brDeliveredPilotFilter");
+  if (pilotSel && pilotSel.options.length <= 1) {
+    const pilots = (window._allPilotsData || window._pilotsData || []);
+    pilotSel.innerHTML = `<option value="">— كل الطيارين —</option>` +
+      pilots.map(p => `<option value="${p.id}">${p.name}</option>`).join("");
+  }
+};
+
+window.applyBrDeliveredFilters = function() {
+  populateBrDeliveredFilters();
+  const pilotId   = document.getElementById("brDeliveredPilotFilter")?.value || "";
+  const fromVal   = document.getElementById("brDeliveredFromDate")?.value;
+  const toVal     = document.getElementById("brDeliveredToDate")?.value;
+  const searchVal = (document.getElementById("brDeliveredSearch")?.value || "").trim().toLowerCase();
+
+  const from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+  const to   = toVal   ? new Date(toVal   + "T23:59:59") : null;
+
+  const allOrders = window._ordersData || [];
+  const branchId  = window._currentUser?.branchId;
+
+  let filtered = allOrders.filter(o => {
+    if (o.status !== "تم التسليم") return false;
+    if (branchId && o.branchId !== branchId) return false;
+    if (pilotId && o.pilotId !== pilotId) return false;
+    if (from || to) {
+      const dt = new Date(o.deliveredAt || o.createdAt);
+      if (from && dt < from) return false;
+      if (to   && dt > to)   return false;
+    }
+    if (searchVal) {
+      const orderNo = (o.orderNum || o.id || "").toLowerCase();
+      const sender  = (o.senderName || "").toLowerCase();
+      const recv    = ((o.deliveries || []).map(d => d.receiverName || "").join(" ")).toLowerCase();
+      if (!orderNo.includes(searchVal) && !sender.includes(searchVal) && !recv.includes(searchVal)) return false;
+    }
+    return true;
+  });
+
+  const filteredEl = document.getElementById("stat-delivered-filtered");
+  if (filteredEl) filteredEl.textContent = filtered.length;
+
+  if (window._brRenderDeliveredTable) window._brRenderDeliveredTable(filtered);
+};
+
+window.clearBrDeliveredFilters = function() {
+  ["brDeliveredPilotFilter","brDeliveredFromDate","brDeliveredToDate","brDeliveredSearch"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+  applyBrDeliveredFilters();
+};
 </script>
 </body>
 </html>
