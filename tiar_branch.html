@@ -34,6 +34,7 @@
     window._set    = set;
     window._remove = remove;
     window._get    = get;
+    window._fbFunctions = { onValue, ref };
 
     /* ── parcelCount helpers ─────────────────────────────────────── */
     function parcelCount(order) {
@@ -274,7 +275,7 @@
     /* ═══════════════════════════════════════════════════════════════
        NAVIGATION
     ═══════════════════════════════════════════════════════════════ */
-    const PAGES = ["orders", "delivering", "delivered", "undelivered", "cancelled", "pilots", "transfers", "cashstores", "accounting", "reports", "pilot-orders"];
+    const PAGES = ["orders", "delivering", "delivered", "undelivered", "cancelled", "pilots", "pilotmap", "transfers", "cashstores", "accounting", "reports", "pilot-orders"];
     window.navigateTo = function(page) {
       PAGES.forEach(p => document.getElementById(`page-${p}`)?.classList.remove("active"));
       document.getElementById(`page-${page}`)?.classList.add("active");
@@ -292,6 +293,9 @@
         if (window.populateReportFilters) window.populateReportFilters();
       }
       if (page === "accounting" && window.renderAccountingPage) window.renderAccountingPage();
+      if (page === "pilotmap") {
+        setTimeout(() => { if (window.initPilotMap) window.initPilotMap(); }, 200);
+      }
       if (page === "delivered") {
         setTimeout(() => {
           if (window.populateBrDeliveredFilters) window.populateBrDeliveredFilters();
@@ -572,6 +576,7 @@
               <button class="view-btn" onclick="viewOrderDetails('${o.id}')">🔍 تفاصيل</button>
               <button class="assign-btn" onclick="assignPilotToOrder('${o.id}')">🛵 تحميل</button>
               <button class="del-btn" style="background:rgba(249,115,22,.15);color:var(--orange);border:1px solid var(--orange)" onclick="openTransferOrderModal('${o.id}')">🔁 نقل لفرع آخر</button>
+              <button class="del-btn" style="margin-top:4px;width:100%;display:block;text-align:center;background:rgba(239,68,68,.15);color:var(--red);border:1px solid var(--red)" onclick="cancelOrderBranch('${o.id}')">❌ إلغاء</button>
             </td>
           </tr>`;
         }).join("");
@@ -625,6 +630,7 @@
               <button class="transfer-btn" style="background:rgba(249,115,22,.15);color:var(--orange);border:1px solid var(--orange)" onclick="transferOrderPilot('${o.id}')">🔄 نقل لطيار آخر</button>
               <button class="finish-btn" onclick="finishDelivery('${o.id}','${o.pilotId || ''}')">✅ إنهاء</button>
               <button class="del-btn" style="margin-top:4px;width:100%;display:block;text-align:center" onclick="markOrderNotDelivered('${o.id}','${o.pilotId || ''}')">↩️ لم يتم التوصيل</button>
+              <button class="del-btn" style="margin-top:4px;width:100%;display:block;text-align:center;background:rgba(239,68,68,.15);color:var(--red);border:1px solid var(--red)" onclick="cancelOrderBranch('${o.id}')">❌ إلغاء</button>
             </td>
           </tr>`;
         }).join("");
@@ -978,6 +984,59 @@
           showToast("تمّ تسجيل عدم التوصيل ✓", "success");
         }
       } catch(e) { showToast("خطأ: " + e.message, "error"); }
+    };
+
+
+    /* ═══════════════════════════════════════════════════════════════
+       CANCEL ORDER (إلغاء طلب من لوحة الفرع)
+    ═══════════════════════════════════════════════════════════════ */
+    window.cancelOrderBranch = async function(orderId) {
+      const order = (window._ordersData || []).find(o => o.id === orderId);
+      if (!order) return;
+
+      const title  = order.orderNum ? `إلغاء الطلب ${order.orderNum}` : 'إلغاء الطلب';
+      const reason = prompt(title + '\n\nيرجى كتابة سبب الإلغاء:');
+      if (reason === null) return;
+      if (!reason.trim()) { showToast('يجب كتابة سبب للإلغاء', 'error'); return; }
+
+      const confirmMsg = (order.orderNum ? `تأكيد إلغاء الطلب ${order.orderNum}` : 'تأكيد إلغاء الطلب') + '\nالسبب: ' + reason.trim();
+      if (!confirm(confirmMsg)) return;
+
+      try {
+        const updates = {
+          prevStatus  : order.status || 'قيد التنفيذ',
+          status      : 'ملغي',
+          cancelReason: reason.trim(),
+          cancelledAt : new Date().toISOString(),
+          cancelledBy : window._currentUser?.username || 'مشرف الفرع'
+        };
+
+        if (order.status === 'جاري التوصيل' && order.pilotId) {
+          const pilotOrders = (window._ordersData || []).filter(o =>
+            o.pilotId === order.pilotId &&
+            o.status === 'جاري التوصيل' &&
+            o.id !== orderId
+          );
+          const pilotUpdate = pilotOrders.length > 0
+            ? { activeOrders: pilotOrders.length }
+            : { pilotStatus: 'waiting', activeOrders: 0, statusSince: new Date().toISOString() };
+
+          const allUpdates = {};
+          allUpdates['orders/' + orderId] = updates;
+          allUpdates['pilots/' + order.pilotId] = pilotUpdate;
+          await update(ref(db), allUpdates);
+
+          const msg = pilotOrders.length > 0
+            ? 'تمّ إلغاء الطلب ✓ الطيار لا يزال يحمل ' + pilotOrders.length + ' طلب'
+            : 'تمّ إلغاء الطلب ✓ الطيار أصبح في حالة انتظار';
+          showToast(msg, 'success');
+        } else {
+          await update(ref(db, 'orders/' + orderId), updates);
+          showToast('تمّ نقل الطلب إلى الطلبات الملغاة ✓', 'success');
+        }
+
+        navigateTo('cancelled');
+      } catch(e) { showToast('خطأ أثناء إلغاء الطلب: ' + e.message, 'error'); }
     };
 
     /* ═══════════════════════════════════════════════════════════════
@@ -2173,7 +2232,7 @@
       const sel = document.getElementById("transferOrderBranch");
       sel.innerHTML = `<option value="">— اختر الفرع الصحيح —</option>` +
         branches.filter(b => b.id !== myBranchId)
-          .map(b => `<option value="${b.id}" data-name="${b.name}">${b.name} — ${b.area || ""}</option>`).join("");
+          .map(b => `<option value="${b.id}" data-name="${b.name}">${b.name} — ${b.areas && b.areas.length ? b.areas.join('، ') : (b.area || "")}</option>`).join("");
       document.getElementById("modal-transfer-order").classList.add("open");
     };
 
@@ -2208,7 +2267,7 @@
       const sel = document.getElementById("transferToBranch");
       sel.innerHTML = `<option value="">— اختر الفرع المستقبِل —</option>` +
         branches.filter(b => b.id !== myBranchId)
-          .map(b => `<option value="${b.id}" data-name="${b.name}">${b.name} — ${b.area || ""}</option>`).join("");
+          .map(b => `<option value="${b.id}" data-name="${b.name}">${b.name} — ${b.areas && b.areas.length ? b.areas.join('، ') : (b.area || "")}</option>`).join("");
       document.getElementById("modal-transfer").classList.add("open");
     };
 
@@ -2711,7 +2770,7 @@
       if (!branchId)        selectEl.innerHTML = `<option value="">— لا توجد مناطق —</option>`;
       else if (!zones.length) selectEl.innerHTML = `<option value="">— لا توجد مناطق لهذا الفرع —</option>`;
       else selectEl.innerHTML = `<option value="">— اختر المنطقة —</option>` +
-        zones.map(z => `<option value="${z.id}" data-price="${z.price}">${z.name} — ${z.price} ج.م</option>`).join("");
+        zones.map(z => `<option value="${z.id}" data-price="${z.price}">${z.areaName || z.name} — ${z.price} ج.م</option>`).join("");
       const newSel = selectEl.cloneNode(true);
       selectEl.parentNode.replaceChild(newSel, selectEl);
       if (onChange) {
@@ -2911,7 +2970,7 @@
         await runTransaction(counterRef, (cur) => { newCount = (cur||0)+1; return newCount; });
         const orderNum   = `${branchCode}-${String(newCount).padStart(3,"0")}`;
         const totalPrice = deliveries.reduce((s,d) => s+(d.zonePrice||0), 0);
-        await push(ref(db, "orders"), {
+        const newOrderRef = await push(ref(db, "orders"), {
           orderNum, senderId: finalSenderId, senderName: finalSenderName,
           senderPhone   : document.getElementById("bOrderSenderPhone").value,
           senderPhone2  : document.getElementById("bOrderSenderPhone2").value,
@@ -2927,6 +2986,10 @@
           addedByRole: "مشرف فرع",
           source     : "branch"
         });
+        geocodeOrderInBackground(newOrderRef.key, {
+          senderAddress: document.getElementById("bOrderSenderAddress").value,
+          deliveries
+        });
         showToast(`تمّ حفظ الطلب ${orderNum} بنجاح ✓`, "success");
         closeModal("order");
       } catch(e) { showToast("خطأ أثناء الحفظ: " + e.message, "error"); }
@@ -2939,6 +3002,34 @@
     window.openModal = function(type) {
       document.getElementById(`modal-${type}`)?.classList.add("open");
     };
+
+    /* ── Geocoding: تحويل العنوان → إحداثيات ──────────────────────── */
+    async function geocodeAddress(address) {
+      if (!address || address.trim().length < 3) return null;
+      try {
+        const q = encodeURIComponent(address + " مصر");
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${q}&limit=1&countrycodes=eg`,
+          { headers: { "Accept-Language": "ar", "User-Agent": "tiar-app/1.0" } }
+        );
+        const data = await res.json();
+        if (data?.length > 0) return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      } catch(e) { console.warn("geocode:", e); }
+      return null;
+    }
+    async function geocodeOrderInBackground(orderId, order) {
+      try {
+        const ups = {};
+        if (order.senderAddress) { const g = await geocodeAddress(order.senderAddress); if (g) ups["geoSender"] = g; }
+        const deliveries = order.deliveries || [];
+        for (let i = 0; i < deliveries.length; i++) {
+          if (deliveries[i].address) { const g = await geocodeAddress(deliveries[i].address); if (g) ups[`deliveries/${i}/geo`] = g; }
+          await new Promise(r => setTimeout(r, 1100));
+        }
+        if (Object.keys(ups).length > 0) await update(ref(db, "orders/" + orderId), ups);
+      } catch(e) { console.warn("geocodeOrder:", e); }
+    }
+
     window.closeModal = function(type) {
       document.getElementById(`modal-${type}`)?.classList.remove("open");
     };
@@ -3316,6 +3407,7 @@
       <button class="nav-item" data-page="cancelled" onclick="navigateTo('cancelled')" id="navCancelled">❌ الطلبات الملغاة</button>
       <span class="sidebar-section-label">الطيارون</span>
       <button class="nav-item" data-page="pilots" onclick="navigateTo('pilots')">👨‍✈️ طيارو الفرع</button>
+      <button class="nav-item" data-page="pilotmap" onclick="navigateTo('pilotmap')">🗺️ خريطة الطيارين</button>
       <button class="nav-item" data-page="transfers" onclick="navigateTo('transfers')" style="position:relative">🔄 النقل والدعم <span id="transfersBadge" style="display:none" class="nav-badge">0</span></button>
       <button class="nav-item" data-page="cashstores" onclick="navigateTo('cashstores')">🏦 الخزن والعهد</button>
       <button class="nav-item" data-page="accounting" onclick="navigateTo('accounting')">💰 الحسابات</button>
@@ -3602,6 +3694,16 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- ── PAGE: PILOT MAP ── -->
+    <div class="page" id="page-pilotmap">
+      <div class="sec-header">
+        <span class="sec-title">🗺️ خريطة الطيارين — تتبع مباشر</span>
+        <button class="add-btn" onclick="window.initPilotMap && window.initPilotMap()" style="background:var(--sky)">🔄 تحديث</button>
+      </div>
+      <div id="pilot-map-status" style="padding:8px 16px;font-size:.85rem;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <div id="pilot-map" style="width:100%;height:calc(100vh - 220px);border-radius:12px;overflow:hidden;border:1px solid var(--border)"></div>
     </div>
 
     <!-- ── PAGE: TRANSFERS ── -->
@@ -4799,6 +4901,201 @@ window.clearBrDeliveredFilters = function() {
   applyBrDeliveredFilters();
 };
 </script>
+<!-- Leaflet — خريطة الطيارين والأوردرات (الفرع) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  /* ═══════════════════════════════════════════════════════════════════
+     خريطة الفرع — طيارو الفرع + أوردراتهم — تتبع فوري real-time
+  ═══════════════════════════════════════════════════════════════════ */
+  let _pilotMap           = null;
+  let _pilotMarkers       = {};
+  let _orderMarkers       = {};
+  let _orderDelivMarkers  = {};
+  let _mapFbUnsub         = null;
+  let _mapOrderFbUnsub    = null;
+  let _mapStatusInterval  = null;
+  let _lastPilotsSnap     = null;
+  let _lastOrdersSnap     = null;
+  let _layerPilots        = null;
+  let _layerOrders        = null;
+
+  function _mkPilotIcon(status) {
+    return L.divIcon({
+      className:"",
+      html:`<div style="background:${status==="delivering"?"#f97316":"#22c55e"};color:#fff;border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;font-size:19px;box-shadow:0 2px 10px rgba(0,0,0,.35);border:2px solid #fff">🛵</div>`,
+      iconSize:[38,38],iconAnchor:[19,19]
+    });
+  }
+  function _mkOrderSenderIcon(status, orderNum) {
+    const bg = status==="جاري التوصيل"?"#f97316":status==="تم التسليم"?"#22c55e":"#3b82f6";
+    return L.divIcon({
+      className:"",
+      html:`<div style="background:${bg};color:#fff;border-radius:10px;padding:3px 7px;font-size:11px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.3);border:2px solid #fff;white-space:nowrap;direction:ltr">📦 ${(orderNum||"").slice(-4)}</div>`,
+      iconSize:[60,28],iconAnchor:[30,14]
+    });
+  }
+  function _mkOrderDelivIcon() {
+    return L.divIcon({
+      className:"",
+      html:`<div style="background:#8b5cf6;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3);border:2px solid #fff">📍</div>`,
+      iconSize:[26,26],iconAnchor:[13,13]
+    });
+  }
+
+  function _pilotPopupHtml(p) {
+    const loc=p.location||{};
+    const upd=loc.updatedAt?new Date(loc.updatedAt):null;
+    const sec=upd?Math.floor((Date.now()-upd)/1000):null;
+    const t=sec===null?"—":sec<60?`منذ ${sec} ث`:sec<3600?`منذ ${Math.floor(sec/60)} د`:`منذ ${Math.floor(sec/3600)} س`;
+    const activeOrders=(window._ordersData||[]).filter(o=>o.pilotId===p.id&&o.status==="جاري التوصيل");
+    const ordersHtml=activeOrders.length?activeOrders.map(o=>`<div style="font-size:.78rem;color:#f97316;margin-top:3px">• ${o.orderNum} (${(o.deliveries||[]).length} طرد)</div>`).join(""):`<div style="font-size:.78rem;color:#64748b;margin-top:3px">لا أوردرات حالياً</div>`;
+    return `<div style="text-align:right;direction:rtl;min-width:190px">
+      <div style="font-weight:700;font-size:1rem;margin-bottom:5px">🛵 ${p.name||"—"}</div>
+      <div style="color:#666;font-size:.83rem">📱 ${p.phone1||"—"}</div>
+      <div style="margin:5px 0 3px;font-weight:700;font-size:.8rem">الأوردرات:</div>${ordersHtml}
+      <div style="margin-top:6px;padding:3px 7px;border-radius:6px;font-size:.8rem;
+        background:${p.pilotStatus==="delivering"?"#fff7ed":"#f0fdf4"};
+        color:${p.pilotStatus==="delivering"?"#c2410c":"#15803d"};font-weight:600">
+        ${p.pilotStatus==="delivering"?"🛵 في التوصيل":"⏳ في الانتظار"}
+      </div>
+      <div style="color:#999;font-size:.75rem;margin-top:5px">⏱ ${t}</div>
+    </div>`;
+  }
+
+  function _orderSenderPopupHtml(o) {
+    const pilot=o.pilotId?(window._pilotsData||[]).find(p=>p.id===o.pilotId):null;
+    const dList=(o.deliveries||[]).map((d,i)=>`<div style="padding:2px 0;border-top:1px solid #e5e7eb;margin-top:2px;font-size:.77rem">${d.receiverName||"—"} — ${d.zoneName||""}${d.geo?` <a href="#" onclick="event.preventDefault();_pilotMap.flyTo([${d.geo.lat},${d.geo.lng}],16)" style="color:#3b82f6">📍</a>`:""}</div>`).join("");
+    return `<div style="text-align:right;direction:rtl;min-width:190px">
+      <div style="font-weight:700;color:#3b82f6;font-size:.95rem;margin-bottom:4px">📦 ${o.orderNum||"—"}</div>
+      <div style="font-size:.82rem;font-weight:600">${o.senderName||"—"}</div>
+      <div style="font-size:.78rem;color:#64748b">${o.senderAddress||""}</div>
+      ${pilot?`<div style="font-size:.78rem;color:#f97316;margin-top:3px">🛵 ${pilot.name}</div>`:""}
+      <div style="font-size:.78rem;font-weight:600;margin-top:4px">${(o.deliveries||[]).length} طرد/طرود:</div>${dList}
+      <div style="margin-top:5px;padding:3px 7px;border-radius:6px;font-size:.78rem;font-weight:600;
+        background:${o.status==="جاري التوصيل"?"#fff7ed":"#eff6ff"};
+        color:${o.status==="جاري التوصيل"?"#c2410c":"#1d4ed8"}">${o.status}</div>
+    </div>`;
+  }
+
+  function _applyPilots(data) {
+    if (!_pilotMap||!data) return;
+    const branchPilotIds=new Set((window._pilotsData||[]).map(p=>p.id));
+    const seenIds=new Set();
+    Object.entries(data).forEach(([id,v])=>{
+      if (!branchPilotIds.has(id)) return;
+      const p={id,...v};
+      const loc=p.location;
+      if (!loc?.lat||!loc?.lng) return;
+      seenIds.add(id);
+      const lat=parseFloat(loc.lat),lng=parseFloat(loc.lng);
+      if (_pilotMarkers[id]) { _pilotMarkers[id].setLatLng([lat,lng]); _pilotMarkers[id].setIcon(_mkPilotIcon(p.pilotStatus)); _pilotMarkers[id].getPopup()?.setContent(_pilotPopupHtml(p)); }
+      else { _pilotMarkers[id]=L.marker([lat,lng],{icon:_mkPilotIcon(p.pilotStatus),zIndexOffset:1000}).addTo(_layerPilots).bindPopup(_pilotPopupHtml(p)); }
+    });
+    Object.keys(_pilotMarkers).forEach(id=>{if(!seenIds.has(id)){_layerPilots.removeLayer(_pilotMarkers[id]);delete _pilotMarkers[id];}});
+  }
+
+  function _applyOrders(data) {
+    if (!_pilotMap||!data) return;
+    const branchId=window._currentUser?.branchId;
+    const seenS=new Set(),seenD=new Set();
+    const active=new Set(["قيد التنفيذ","جاري التوصيل"]);
+    Object.entries(data).forEach(([id,v])=>{
+      const o={id,...v};
+      if (branchId && o.branchId !== branchId) return;
+      if (!active.has(o.status)) {
+        if (_orderMarkers[id]) { _layerOrders.removeLayer(_orderMarkers[id]); delete _orderMarkers[id]; }
+        (o.deliveries||[]).forEach((_,i)=>{ const dk=id+"_"+i; if(_orderDelivMarkers[dk]){_layerOrders.removeLayer(_orderDelivMarkers[dk]);delete _orderDelivMarkers[dk];} });
+        return;
+      }
+      if (o.geoSender?.lat) {
+        seenS.add(id);
+        const lat=o.geoSender.lat,lng=o.geoSender.lng;
+        if (_orderMarkers[id]) { _orderMarkers[id].setLatLng([lat,lng]); _orderMarkers[id].setIcon(_mkOrderSenderIcon(o.status,o.orderNum)); _orderMarkers[id].getPopup()?.setContent(_orderSenderPopupHtml(o)); }
+        else { _orderMarkers[id]=L.marker([lat,lng],{icon:_mkOrderSenderIcon(o.status,o.orderNum),zIndexOffset:500}).addTo(_layerOrders).bindPopup(_orderSenderPopupHtml(o)); }
+      }
+      (o.deliveries||[]).forEach((d,i)=>{
+        if (!d.geo?.lat) return;
+        const dk=id+"_"+i;
+        seenD.add(dk);
+        if (_orderDelivMarkers[dk]) { _orderDelivMarkers[dk].setLatLng([d.geo.lat,d.geo.lng]); }
+        else { _orderDelivMarkers[dk]=L.marker([d.geo.lat,d.geo.lng],{icon:_mkOrderDelivIcon(),zIndexOffset:400}).addTo(_layerOrders).bindPopup(`<div dir="rtl"><b>${d.receiverName||"—"}</b><br>${d.address||""}<br><small style="color:#7c3aed">${o.orderNum}</small></div>`); }
+      });
+    });
+    Object.keys(_orderMarkers).forEach(id=>{if(!seenS.has(id)){_layerOrders.removeLayer(_orderMarkers[id]);delete _orderMarkers[id];}});
+    Object.keys(_orderDelivMarkers).forEach(dk=>{if(!seenD.has(dk)){_layerOrders.removeLayer(_orderDelivMarkers[dk]);delete _orderDelivMarkers[dk];}});
+  }
+
+  function _startMapTick() {
+    if (_mapStatusInterval) clearInterval(_mapStatusInterval);
+    _mapStatusInterval = setInterval(() => {
+      const el=document.getElementById("pilot-map-status");
+      if (!el) return;
+      const totalBr=(window._pilotsData||[]).length;
+      el.innerHTML=`
+        <span style="background:#f0fdf4;color:#15803d;padding:3px 10px;border-radius:20px;font-size:.8rem">🛵 ${Object.keys(_pilotMarkers).length} / ${totalBr} طيار</span>
+        <span style="background:#eff6ff;color:#1d4ed8;padding:3px 10px;border-radius:20px;font-size:.8rem">📦 ${Object.keys(_orderMarkers).length} أوردر</span>
+        <span style="background:#f5f3ff;color:#7c3aed;padding:3px 10px;border-radius:20px;font-size:.8rem">📍 ${Object.keys(_orderDelivMarkers).length} تسليم</span>
+        <span style="background:#f8fafc;color:#64748b;padding:3px 10px;border-radius:20px;font-size:.8rem">🔄 ${new Date().toLocaleTimeString("ar-EG")}</span>
+        <span style="background:#dbeafe;color:#1d4ed8;padding:3px 10px;border-radius:20px;font-size:.8rem">⚡ تتبع فوري</span>`;
+      if (_lastPilotsSnap) {
+        Object.entries(_lastPilotsSnap).forEach(([id,v])=>{
+          const m=_pilotMarkers[id];
+          if(m?.isPopupOpen()) m.getPopup()?.setContent(_pilotPopupHtml({id,...v}));
+        });
+      }
+    }, 1000);
+  }
+
+  window.initPilotMap = function() {
+    const mapEl=document.getElementById("pilot-map");
+    if (!mapEl) return;
+    if (!_pilotMap) {
+      _pilotMap=L.map("pilot-map").setView([30.0444,31.2357],11);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap"}).addTo(_pilotMap);
+      _layerPilots=L.layerGroup().addTo(_pilotMap);
+      _layerOrders=L.layerGroup().addTo(_pilotMap);
+    }
+    if (_mapFbUnsub)      { _mapFbUnsub();      _mapFbUnsub=null; }
+    if (_mapOrderFbUnsub) { _mapOrderFbUnsub(); _mapOrderFbUnsub=null; }
+
+    const fbFn=window._fbFunctions||{};
+    if (fbFn.onValue && fbFn.ref && window._db) {
+      _mapFbUnsub=fbFn.onValue(fbFn.ref(window._db,"pilots"),snap=>{
+        _lastPilotsSnap=snap.val();
+        _applyPilots(_lastPilotsSnap);
+        if (!_brFirstFit) {
+          const locs=Object.values(_lastPilotsSnap||{}).filter(p=>p.location?.lat).map(p=>[parseFloat(p.location.lat),parseFloat(p.location.lng)]);
+          if (locs.length) { _brFirstFit=true; _pilotMap.fitBounds(locs,{padding:[40,40],maxZoom:14}); }
+        }
+      });
+      _mapOrderFbUnsub=fbFn.onValue(fbFn.ref(window._db,"orders"),snap=>{
+        _lastOrdersSnap=snap.val();
+        _applyOrders(_lastOrdersSnap);
+      });
+    } else {
+      async function _poll() {
+        try {
+          const [rP,rO]=await Promise.all([
+            fetch("https://tiar-cb6fb-default-rtdb.firebaseio.com/pilots.json"),
+            fetch("https://tiar-cb6fb-default-rtdb.firebaseio.com/orders.json")
+          ]);
+          _lastPilotsSnap=await rP.json(); _lastOrdersSnap=await rO.json();
+          _applyPilots(_lastPilotsSnap); _applyOrders(_lastOrdersSnap);
+        } catch(e) { console.error("map poll error:",e); }
+      }
+      _poll();
+      const iv=setInterval(_poll,1000);
+      _mapFbUnsub=()=>clearInterval(iv);
+    }
+    _startMapTick();
+  };
+  let _brFirstFit=false;
+
+  document.addEventListener("visibilitychange",()=>{
+    if (document.hidden) { if(_mapStatusInterval){clearInterval(_mapStatusInterval);_mapStatusInterval=null;} }
+    else { _startMapTick(); }
+  });
+</script>
 </body>
 </html>
-

@@ -246,7 +246,7 @@
         const d = snap.val() || {};
         window._zonesList = Object.entries(d)
           .map(([id, v]) => ({ id, ...v }))
-          .filter(z => z.branchId === u.branchId);
+          .filter(z => (z.deliveryBranchId || z.branchId) === u.branchId);
         // Refill any existing zone dropdowns on the form
         document.querySelectorAll("[id^='rZone-']").forEach(sel => {
           const n = sel.id.replace("rZone-", "");
@@ -363,7 +363,7 @@
       window._zonesList.forEach(z => {
         const o = document.createElement("option");
         o.value = z.id; o.dataset.price = z.price || 0;
-        o.textContent = `${z.name} — ${z.price || 0} ج.م`;
+        o.textContent = `${z.areaName || z.name} — ${z.price || 0} ج.م`;
         sel.appendChild(o);
       });
     }
